@@ -133,11 +133,14 @@ impl IconCache {
         if let Some(quality) = quality {
             url.push_str(&format!("&quality={quality}"));
         }
-        let mut response = self
-            .agent
-            .get(&url)
-            .call()
-            .map_err(|error| error.to_string())?;
+        // A pooled keep-alive connection may have been closed by the server or a proxy;
+        // that surfaces as a reset or broken pipe, so one immediate retry is safe for a GET.
+        // Timeouts are not retried: the permit would be held twice as long.
+        let mut response = match self.agent.get(&url).call() {
+            Err(error) if !matches!(error, ureq::Error::Timeout(_)) => self.agent.get(&url).call(),
+            result => result,
+        }
+        .map_err(|error| error.to_string())?;
         match response.status().as_u16() {
             200 => {}
             404 => return Ok(Download::Missing),

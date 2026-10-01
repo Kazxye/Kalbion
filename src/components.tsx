@@ -145,7 +145,21 @@ export function ConfirmDialog({
   );
 }
 
-/** Official render served through the Rust icon cache; falls back to a generic icon. */
+/** Just past the Rust cooldown for failed downloads (120 s), so a retry can reach the network. */
+const ICON_RETRY_MS = 130_000;
+function iconUrl(id: string, quality: number | null, attempt: number) {
+  const params = new URLSearchParams();
+  if (quality) params.set('quality', String(quality));
+  // A new URL per attempt keeps the webview from reusing a cached failure.
+  if (attempt) params.set('attempt', String(attempt));
+  const query = params.toString();
+  return `${convertFileSrc(id, 'icon')}${query ? `?${query}` : ''}`;
+}
+
+/**
+ * Official render served through the Rust icon cache. On failure it shows a generic icon
+ * and retries in the background with an off-screen probe, swapping only if it loads.
+ */
 export function ItemIcon({
   item,
   quality,
@@ -153,22 +167,39 @@ export function ItemIcon({
   item: Item;
   quality: number | null;
 }) {
-  const src = desktop
-    ? `${convertFileSrc(item.id, 'icon')}${quality ? `?quality=${quality}` : ''}`
-    : null;
-  const [failed, setFailed] = useState<string | null>(null);
-  const showImage = src !== null && failed !== src;
+  const key = `${item.id}:${quality ?? ''}`;
+  const [state, setState] = useState({ key, attempt: 0, failed: false });
+  const current =
+    state.key === key ? state : { key, attempt: 0, failed: false };
+  useEffect(() => {
+    if (!desktop || !current.failed) return;
+    let probe: HTMLImageElement | undefined;
+    const timer = setTimeout(() => {
+      const attempt = current.attempt + 1;
+      probe = new Image();
+      probe.onload = () => setState({ key, attempt, failed: false });
+      probe.onerror = () => setState({ key, attempt, failed: true });
+      probe.src = iconUrl(item.id, quality, attempt);
+    }, ICON_RETRY_MS);
+    return () => {
+      clearTimeout(timer);
+      if (probe) probe.onload = probe.onerror = null;
+    };
+  }, [key, current.attempt, current.failed, item.id, quality]);
+  const showImage = desktop && !current.failed;
   return (
     <span
       className={`item-icon ${item.tier ? `tier-${item.tier}` : ''} ${showImage ? 'with-image' : ''}`}
     >
       {showImage ? (
         <img
-          src={src}
+          src={iconUrl(item.id, quality, current.attempt)}
           alt=""
           loading="lazy"
           decoding="async"
-          onError={() => setFailed(src)}
+          onError={() =>
+            setState({ key, attempt: current.attempt, failed: true })
+          }
         />
       ) : (
         <Boxes size={20} />

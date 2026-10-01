@@ -5,14 +5,21 @@ use std::sync::{Arc, Mutex};
 
 const PNG: &[u8] = b"\x89PNG\r\n\x1a\nfake-image";
 
-/// Minimal HTTP server: answers by path and records every request line.
 fn serve(answer: fn(&str) -> (u16, &'static [u8])) -> (String, Arc<Mutex<Vec<String>>>) {
+    serve_dropping(answer, 0)
+}
+/// Minimal HTTP server: answers by path and records every request line. The first
+/// `drop_first` connections are closed without a response, like a stale keep-alive socket.
+fn serve_dropping(
+    answer: fn(&str) -> (u16, &'static [u8]),
+    drop_first: usize,
+) -> (String, Arc<Mutex<Vec<String>>>) {
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
     let url = format!("http://{}", listener.local_addr().unwrap());
     let requests = Arc::new(Mutex::new(Vec::new()));
     let log = requests.clone();
     std::thread::spawn(move || {
-        for stream in listener.incoming() {
+        for (index, stream) in listener.incoming().enumerate() {
             let mut stream = stream.unwrap();
             let mut reader = BufReader::new(stream.try_clone().unwrap());
             let mut request_line = String::new();
@@ -25,6 +32,9 @@ fn serve(answer: fn(&str) -> (u16, &'static [u8])) -> (String, Arc<Mutex<Vec<Str
                 }
             }
             let path = request_line.split_whitespace().nth(1).unwrap().to_string();
+            if index < drop_first {
+                continue;
+            }
             let (status, body) = answer(&path);
             log.lock().unwrap().push(path);
             write!(
@@ -119,4 +129,13 @@ fn ids_that_could_escape_the_cache_are_rejected_before_any_request() {
     }
     assert!(icons.get("T4_BAG", Some(6)).is_err());
     assert!(requests.lock().unwrap().is_empty());
+}
+
+#[test]
+fn a_connection_dropped_mid_request_is_retried_once() {
+    let directory = tempfile::tempdir().unwrap();
+    let (url, requests) = serve_dropping(|_| (200, PNG), 1);
+    let icons = cache(directory.path(), &url);
+    assert_eq!(icons.get("T4_BAG", Some(1)).unwrap().as_deref(), Some(PNG));
+    assert_eq!(requests.lock().unwrap().len(), 1);
 }

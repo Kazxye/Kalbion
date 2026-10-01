@@ -45,7 +45,7 @@ Os dados desses dumps derivam de arquivos do jogo, de propriedade da Sandbox Int
 
 ## Ícones de itens
 
-Os ícones vêm do serviço oficial de renderização da SBI (`render.albiononline.com`, 64 px, por item e quality) e passam pelo Rust: o webview pede `icon://localhost/<UniqueName>?quality=N` (`http://icon.localhost/...` no Windows) e nunca acessa a internet diretamente. Cache em disco no diretório de cache do app (`~/.cache/io.kalbion.desktop/icons` no Linux), válido por 30 dias e usado também offline. Itens inexistentes (404) são lembrados por 7 dias, porque o serviço demora a respondê-los; timeouts (15 s) e falhas de rede são repetidos após 2 minutos. No máximo 6 downloads simultâneos, resposta limitada a 512 KB e conferida como PNG. Sem ícone disponível, a interface mostra o ícone genérico com o tier.
+Os ícones vêm do serviço oficial de renderização da SBI (`render.albiononline.com`, 64 px, por item e quality) e passam pelo Rust: o webview pede `icon://localhost/<UniqueName>?quality=N` (`http://icon.localhost/...` no Windows) e nunca acessa a internet diretamente. Cache em disco no diretório de cache do app (`~/.cache/io.kalbion.desktop/icons` no Linux), válido por 30 dias e usado também offline. Itens inexistentes (404) são lembrados por 7 dias, porque o serviço demora a respondê-los; timeouts (15 s) e falhas de rede são repetidos após 2 minutos. No máximo 6 downloads simultâneos, resposta limitada a 512 KB e conferida como PNG. Sem ícone disponível, a interface mostra o ícone genérico com o tier e tenta de novo em segundo plano a cada 130 s enquanto a linha estiver visível, trocando a imagem só quando ela carrega. Falhas de conexão (como keep-alive fechado pelo servidor) são repetidas uma vez na hora.
 
 ## Modelo de dados
 
