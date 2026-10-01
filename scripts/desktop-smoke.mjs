@@ -67,6 +67,17 @@ async function start() {
     ),
   );
 }
+// Screenshots are visual evidence, not assertions. Some WebKitWebDriver/Wayland setups
+// stall on them, so they are opt-in and a failure only warns.
+async function capture(file) {
+  if (process.env.KALBION_SCREENSHOTS !== '1') return;
+  try {
+    const image = await call('GET', `/session/${session}/screenshot`);
+    await writeFile(file, Buffer.from(image, 'base64'));
+  } catch (error) {
+    console.warn(`WARN: screenshot ${file} skipped: ${error.message}`);
+  }
+}
 async function ipc(request) {
   const result = await call('POST', `/session/${session}/execute/async`, {
     script: `const done=arguments[arguments.length-1]; window.__TAURI_INTERNALS__.invoke('dispatch',{request:arguments[0]}).then(value=>done({value})).catch(error=>done({error:String(error)}));`,
@@ -167,16 +178,9 @@ try {
   await until(() =>
     execute(`return document.querySelectorAll('tbody tr').length === 7`),
   );
-  const screenshot = await call('GET', `/session/${session}/screenshot`);
-  await writeFile(
-    '/tmp/kalbion-desktop.png',
-    Buffer.from(screenshot, 'base64'),
-  );
+  await capture('/tmp/kalbion-desktop.png');
   await execute(`document.querySelector('.panel').scrollIntoView()`);
-  await writeFile(
-    '/tmp/kalbion-desktop-table.png',
-    Buffer.from(await call('GET', `/session/${session}/screenshot`), 'base64'),
-  );
+  await capture('/tmp/kalbion-desktop-table.png');
   await click('Importar JSON');
   await input('textarea', '{"schema_version":99,"events":[]}');
   await click('Validar e importar');
@@ -266,7 +270,7 @@ try {
     'Martlock',
   );
   console.log(
-    'PASS: desktop UI, real IPC, simulation, manual loot, catalog search, void, import validation/replay, prices, player totals, ledger, split, filters, empty/error states, session close/reopen, settings, disabled licensing, persistence after process restart. Screenshot: /tmp/kalbion-desktop.png',
+    'PASS: desktop UI, real IPC, simulation, manual loot, catalog search, void, import validation/replay, prices, player totals, ledger, split, filters, empty/error states, session close/reopen, settings, disabled licensing, persistence after process restart.',
   );
 } finally {
   if (session) await call('DELETE', `/session/${session}`);

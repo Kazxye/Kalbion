@@ -9,43 +9,10 @@ use kalbion_core::{
 use serde::Deserialize;
 use serde_json::{json, Value};
 use std::io::Write;
-use std::path::PathBuf;
-use std::sync::{Mutex, OnceLock};
+use std::sync::Mutex;
 use tauri::Manager;
 
-const MAX_LOG_BYTES: u64 = 5 * 1024 * 1024;
-static LOG_FILE: OnceLock<Mutex<std::fs::File>> = OnceLock::new();
-static LOG_PATH: OnceLock<PathBuf> = OnceLock::new();
-
-/// Sends every log line to stderr and, once the app knows its log directory, to a file.
-/// A release build on Windows has no console, so the file is the only record there.
-struct LogWriter;
-impl Write for LogWriter {
-    fn write(&mut self, buffer: &[u8]) -> std::io::Result<usize> {
-        let _ = std::io::stderr().write_all(buffer);
-        if let Some(Ok(mut file)) = LOG_FILE.get().map(Mutex::lock) {
-            let _ = file.write_all(buffer);
-        }
-        Ok(buffer.len())
-    }
-    fn flush(&mut self) -> std::io::Result<()> {
-        Ok(())
-    }
-}
-fn open_log_file(directory: PathBuf) -> std::io::Result<()> {
-    std::fs::create_dir_all(&directory)?;
-    let path = directory.join("kalbion.log");
-    if std::fs::metadata(&path).is_ok_and(|metadata| metadata.len() > MAX_LOG_BYTES) {
-        std::fs::rename(&path, directory.join("kalbion.log.1"))?;
-    }
-    let file = std::fs::OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(&path)?;
-    let _ = LOG_FILE.set(Mutex::new(file));
-    let _ = LOG_PATH.set(path);
-    Ok(())
-}
+mod logging;
 
 struct AppState(Mutex<Store>);
 #[derive(Deserialize)]
@@ -121,7 +88,8 @@ fn execute(store: &mut Store, request: Request) -> kalbion_core::Result<Value> {
             "settings": store.settings()?,
             "catalog": store.catalog_info()?,
             "license": KeyAuth.status(),
-            "log_path": LOG_PATH.get(),
+            "log_path": logging::path(),
+            "log_failed": logging::failed(),
         }),
         Request::CreateSession { name } => serde_json::to_value(store.create_session(&name)?)?,
         Request::SetClosed { session_id, closed } => {
@@ -312,11 +280,11 @@ fn main() {
     tracing_subscriber::fmt()
         .json()
         .with_target(false)
-        .with_writer(|| LogWriter)
+        .with_writer(|| logging::Writer)
         .init();
     let result = tauri::Builder::default()
         .setup(|app| {
-            if let Err(error) = open_log_file(app.path().app_log_dir()?) {
+            if let Err(error) = logging::open(&app.path().app_log_dir()?) {
                 tracing::error!(operation = "log_file_unavailable", cause = %error);
             }
             let directory = app.path().app_data_dir()?;
@@ -337,7 +305,7 @@ fn main() {
         .run(tauri::generate_context!());
     if let Err(error) = result {
         tracing::error!(operation = "application_failed", cause = %error);
-        let location = LOG_PATH.get().map_or_else(
+        let location = logging::path().map_or_else(
             || "nos logs do terminal".to_string(),
             |path| format!("em {}", path.display()),
         );

@@ -102,6 +102,8 @@ export interface Bootstrap {
   catalog: CatalogInfo;
   license: License;
   log_path: string | null;
+  /** True once writing the log file has failed; details went to stderr. */
+  log_failed: boolean;
 }
 export interface Share {
   player: string;

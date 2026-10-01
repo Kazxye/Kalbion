@@ -117,6 +117,13 @@ export function SettingsPage({
           Log do aplicativo:{' '}
           {boot.log_path ? <code>{boot.log_path}</code> : 'indisponível'}
         </p>
+        {boot.log_failed && (
+          <p role="alert" className="error">
+            A gravação do log falhou nesta execução (disco cheio ou sem
+            permissão?). O aplicativo continua funcionando, mas novos eventos
+            podem não estar registrados.
+          </p>
+        )}
       </section>
     </>
   );

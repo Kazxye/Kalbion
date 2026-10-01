@@ -76,7 +76,7 @@ Os dados desses dumps derivam de arquivos do jogo, de propriedade da Sandbox Int
 ## Dados locais e logs
 
 - Banco: `~/.local/share/io.kalbion.desktop/kalbion.db` (Linux) ou `%APPDATA%\io.kalbion.desktop\kalbion.db` (Windows).
-- Log JSON: subpasta `logs/kalbion.log` do mesmo diretório no Linux; no Windows, o caminho aparece em **Configurações**. Rotação simples em 5 MB. Sem senhas, chaves, tokens ou payloads importados.
+- Log JSON: subpasta `logs/kalbion.log` do mesmo diretório no Linux; no Windows, o caminho aparece em **Configurações**. Rotaciona ao atingir 5 MB, inclusive durante o uso (mantém `kalbion.log.1`); falha de gravação aparece em Configurações. Sem senhas, chaves, tokens ou payloads importados.
 - Migrations rodam ao abrir o banco, uma transação por versão. Antes de atualizar um banco existente, uma cópia consistente é gravada ao lado (`kalbion-v1-backup-<data>.db`). Bancos de versões futuras são recusados.
 - Backup manual: fechar o app e copiar o diretório inteiro, incluindo arquivos `-wal`/`-shm` se existirem.
 
@@ -108,7 +108,7 @@ Teste desktop (Linux, WebKitWebDriver instalado), sempre com diretório de dados
 cargo install tauri-driver --locked
 npm run tauri build -- --debug --no-bundle
 XDG_DATA_HOME=/tmp/kalbion-test tauri-driver --port 4446 --native-port 4447   # outro terminal
-node scripts/desktop-smoke.mjs
+node scripts/desktop-smoke.mjs     # KALBION_SCREENSHOTS=1 grava capturas em /tmp (opcional)
 ```
 
 O teste usa a interface e o IPC reais: sessão, simulação, preço, totais por jogador, ledger, divisão, filtros, importação inválida e replay, loot manual pelo catálogo, anulação, encerramento, configurações e persistência após reiniciar o processo. O diálogo nativo de arquivos (export e importação de catálogo) não é automatizado.
