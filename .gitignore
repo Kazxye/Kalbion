@@ -1,0 +1,11 @@
+node_modules/
+dist/
+target/
+*.db
+*.db-shm
+*.db-wal
+.env*
+.venv/
+.idea/
+.claude
+.codex
