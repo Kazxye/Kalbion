@@ -43,6 +43,10 @@ O Kalbion não distribui dados do jogo. Sem importação, existe só um catálog
 
 Os dados desses dumps derivam de arquivos do jogo, de propriedade da Sandbox Interactive. Avaliar os termos antes de redistribuir qualquer parte deles.
 
+## Ícones de itens
+
+Os ícones vêm do serviço oficial de renderização da SBI (`render.albiononline.com`, 64 px, por item e quality) e passam pelo Rust: o webview pede `icon://localhost/<UniqueName>?quality=N` (`http://icon.localhost/...` no Windows) e nunca acessa a internet diretamente. Cache em disco no diretório de cache do app (`~/.cache/io.kalbion.desktop/icons` no Linux), válido por 30 dias e usado também offline. Itens inexistentes (404) são lembrados por 7 dias, porque o serviço demora a respondê-los; timeouts (15 s) e falhas de rede são repetidos após 2 minutos. No máximo 6 downloads simultâneos, resposta limitada a 512 KB e conferida como PNG. Sem ícone disponível, a interface mostra o ícone genérico com o tier.
+
 ## Modelo de dados
 
 - **Item:** identificado pelo `UniqueName` do Albion (`T5_BAG@1`). Tier e enchantment são derivados do ID; itens como `UNIQUE_HIDEOUT` não têm tier.
@@ -111,10 +115,10 @@ XDG_DATA_HOME=/tmp/kalbion-test tauri-driver --port 4446 --native-port 4447   # 
 node scripts/desktop-smoke.mjs     # KALBION_SCREENSHOTS=1 grava capturas em /tmp (opcional)
 ```
 
-O teste usa a interface e o IPC reais: sessão, simulação, preço, totais por jogador, ledger, divisão, filtros, importação inválida e replay, loot manual pelo catálogo, anulação, encerramento, configurações e persistência após reiniciar o processo. O diálogo nativo de arquivos (export e importação de catálogo) não é automatizado.
+O teste usa a interface e o IPC reais: sessão, simulação, ícones (carregados ou genéricos, nunca quebrados), preço, totais por jogador, ledger, divisão, filtros, importação inválida e replay, loot manual pelo catálogo, anulação, encerramento, configurações e persistência após reiniciar o processo. O diálogo nativo de arquivos (export e importação de catálogo) não é automatizado.
 
 ## Estado
 
-- Implementado: sessões, loot com fontes explícitas, importação v1/v2, deduplicação persistente, filtros e totais, preços manuais por item e quality, anulação de loot, ledger com estorno, divisão, catálogo importável, exportação JSON/CSV, configurações, log em arquivo.
+- Implementado: sessões, loot com fontes explícitas, ícones oficiais com cache, importação v1/v2, deduplicação persistente, filtros e totais, preços manuais por item e quality, anulação de loot, ledger com estorno, divisão, catálogo importável, exportação JSON/CSV, configurações, log em arquivo.
 - Não implementado (páginas marcadas na interface): crafting, financeiro consolidado, composições.
 - Pendente: preços do Albion Data Project (contrato `MarketPrices` existe, adaptador recusa), KeyAuth real, validação no Windows, paginação de sessões muito grandes.

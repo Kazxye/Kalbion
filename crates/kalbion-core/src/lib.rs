@@ -2,6 +2,7 @@ pub mod adapters;
 pub mod catalog;
 pub mod domain;
 mod error;
+pub mod icons;
 pub mod import;
 pub mod licensing;
 mod migrations;

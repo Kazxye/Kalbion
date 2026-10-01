@@ -3,6 +3,7 @@
 use kalbion_core::{
     catalog,
     domain::*,
+    icons::IconCache,
     licensing::{KeyAuth, LicenseProvider},
     Store,
 };
@@ -270,6 +271,58 @@ async fn import_catalog(
         .map_err(|error| report("catalog_import_failed", error))?;
     Ok(Some(info))
 }
+/// Serves `icon://localhost/<UniqueName>?quality=N` (Windows: `http://icon.localhost/...`).
+/// Anything unexpected becomes a 4xx/5xx, and the UI falls back to its generic icon.
+fn icon_response(
+    app: &tauri::AppHandle,
+    request: &tauri::http::Request<Vec<u8>>,
+) -> tauri::http::Response<Vec<u8>> {
+    let respond = |status: u16, body: Vec<u8>| {
+        let mut response = tauri::http::Response::builder().status(status);
+        if status == 200 {
+            response = response
+                .header("Content-Type", "image/png")
+                .header("Cache-Control", "max-age=86400");
+        }
+        response.body(body).unwrap_or_default()
+    };
+    let Some(icons) = app.try_state::<IconCache>() else {
+        return respond(503, Vec::new());
+    };
+    let Some(item_id) = percent_decode(request.uri().path().trim_start_matches('/')) else {
+        return respond(400, Vec::new());
+    };
+    let quality = request
+        .uri()
+        .query()
+        .and_then(|query| {
+            query
+                .split('&')
+                .find_map(|pair| pair.strip_prefix("quality="))
+        })
+        .and_then(|value| value.parse::<u8>().ok());
+    match icons.get(&item_id, quality) {
+        Ok(Some(bytes)) => respond(200, bytes),
+        Ok(None) => respond(404, Vec::new()),
+        Err(_) => respond(400, Vec::new()),
+    }
+}
+fn percent_decode(value: &str) -> Option<String> {
+    let bytes = value.as_bytes();
+    let mut decoded = Vec::with_capacity(bytes.len());
+    let mut index = 0;
+    while index < bytes.len() {
+        if bytes[index] == b'%' {
+            let hex = std::str::from_utf8(bytes.get(index + 1..index + 3)?).ok()?;
+            decoded.push(u8::from_str_radix(hex, 16).ok()?);
+            index += 3;
+        } else {
+            decoded.push(bytes[index]);
+            index += 1;
+        }
+    }
+    String::from_utf8(decoded).ok()
+}
 fn main() {
     #[cfg(target_os = "linux")]
     if std::env::var_os("WEBKIT_DISABLE_DMABUF_RENDERER").is_none() {
@@ -291,11 +344,23 @@ fn main() {
             std::fs::create_dir_all(&directory)?;
             let store = Store::open(directory.join("kalbion.db"))?;
             app.manage(AppState(Mutex::new(store)));
+            match IconCache::new(app.path().app_cache_dir()?.join("icons")) {
+                Ok(icons) => {
+                    app.manage(icons);
+                }
+                Err(error) => tracing::error!(operation = "icon_cache_unavailable", cause = %error),
+            }
             tracing::info!(
                 operation = "application_started",
                 version = env!("CARGO_PKG_VERSION")
             );
             Ok(())
+        })
+        .register_asynchronous_uri_scheme_protocol("icon", |context, request, responder| {
+            let app = context.app_handle().clone();
+            tauri::async_runtime::spawn_blocking(move || {
+                responder.respond(icon_response(&app, &request));
+            });
         })
         .invoke_handler(tauri::generate_handler![
             dispatch,
@@ -318,5 +383,20 @@ fn main() {
             .set_level(rfd::MessageLevel::Error)
             .show();
         std::process::exit(1);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::percent_decode;
+
+    #[test]
+    fn icon_paths_decode_enchantment_and_reject_malformed_escapes() {
+        assert_eq!(percent_decode("T5_BAG%401").as_deref(), Some("T5_BAG@1"));
+        assert_eq!(percent_decode("T4_BAG").as_deref(), Some("T4_BAG"));
+        assert_eq!(percent_decode("%2E%2E%2Fx").as_deref(), Some("../x"));
+        assert_eq!(percent_decode("T4%4"), None);
+        assert_eq!(percent_decode("T4%zz"), None);
+        assert_eq!(percent_decode("%FF"), None);
     }
 }

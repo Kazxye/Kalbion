@@ -98,6 +98,20 @@ try {
   await until(() =>
     execute(`return document.querySelectorAll('tbody tr').length === 7`),
   );
+  // Icons need the network; offline they fall back to the generic icon. Either way no
+  // image may stay broken.
+  await until(() =>
+    execute(
+      `return [...document.querySelectorAll('.item-icon img')].every(img => img.complete)`,
+    ),
+  );
+  const icons = await execute(
+    `const images = [...document.querySelectorAll('.item-icon img')]; return { loaded: images.filter(img => img.naturalWidth > 0).length, broken: images.filter(img => img.naturalWidth === 0).length, fallback: document.querySelectorAll('.item-icon:not(.with-image)').length }`,
+  );
+  assert.equal(icons.broken, 0, 'no broken item icons');
+  console.log(
+    `icons: ${icons.loaded} loaded, ${icons.fallback} generic fallback`,
+  );
   const boot = await ipc({ operation: 'bootstrap' });
   assert.equal(boot.license.state, 'disabled');
   const selected = boot.sessions.find(
@@ -270,7 +284,7 @@ try {
     'Martlock',
   );
   console.log(
-    'PASS: desktop UI, real IPC, simulation, manual loot, catalog search, void, import validation/replay, prices, player totals, ledger, split, filters, empty/error states, session close/reopen, settings, disabled licensing, persistence after process restart.',
+    'PASS: desktop UI, real IPC, simulation, manual loot, catalog search, item icons, void, import validation/replay, prices, player totals, ledger, split, filters, empty/error states, session close/reopen, settings, disabled licensing, persistence after process restart.',
   );
 } finally {
   if (session) await call('DELETE', `/session/${session}`);

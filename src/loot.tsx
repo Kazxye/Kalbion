@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react';
 import { Boxes } from 'lucide-react';
 import { request } from './api';
-import { Field } from './components';
+import { Field, ItemIcon } from './components';
 import { date, qualities, qualityLabel, silver, tierLabel } from './format';
 import type { Item, LootRow } from './types';
 
@@ -43,14 +43,7 @@ export function LootTable({
               >
                 <td>
                   <div className="item-cell">
-                    <span
-                      className={`item-icon ${event.item.tier ? `tier-${event.item.tier}` : ''}`}
-                    >
-                      <Boxes size={20} />
-                      <small>
-                        {event.item.tier ? `T${event.item.tier}` : '—'}
-                      </small>
-                    </span>
+                    <ItemIcon item={event.item} quality={event.quality} />
                     <div>
                       <strong>{event.item.name}</strong>
                       <small>{event.item.id}</small>
@@ -207,20 +200,33 @@ export function ManualForm({
           onChange={(event) => setQuery(event.target.value)}
         />
       </Field>
-      <Field label="Item">
-        <select
-          name="item"
-          size={6}
-          value={selected}
-          onChange={(event) => setSelected(event.target.value)}
+      <div className="field">
+        <span id="catalog-results-label">Item</span>
+        <div
+          className="catalog-results"
+          role="listbox"
+          aria-labelledby="catalog-results-label"
         >
           {results?.map((item) => (
-            <option key={item.id} value={item.id}>
-              {item.name} · {tierLabel(item.tier, item.enchantment)} · {item.id}
-            </option>
+            <button
+              type="button"
+              role="option"
+              key={item.id}
+              aria-selected={item.id === selected}
+              className={item.id === selected ? 'selected' : ''}
+              onClick={() => setSelected(item.id)}
+            >
+              <ItemIcon item={item} quality={null} />
+              <span>
+                <strong>{item.name}</strong>
+                <small>
+                  {tierLabel(item.tier, item.enchantment)} · {item.id}
+                </small>
+              </span>
+            </button>
           ))}
-        </select>
-      </Field>
+        </div>
+      </div>
       {results === null && !searchError && (
         <p className="help">Carregando catálogo…</p>
       )}

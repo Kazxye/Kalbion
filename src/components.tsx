@@ -1,5 +1,8 @@
-import { useEffect, useRef, type ReactNode } from 'react';
-import { X } from 'lucide-react';
+import { useEffect, useRef, useState, type ReactNode } from 'react';
+import { convertFileSrc } from '@tauri-apps/api/core';
+import { Boxes, X } from 'lucide-react';
+import { desktop } from './api';
+import type { Item } from './types';
 
 export function Field({
   label,
@@ -139,5 +142,38 @@ export function ConfirmDialog({
         </button>
       </div>
     </Dialog>
+  );
+}
+
+/** Official render served through the Rust icon cache; falls back to a generic icon. */
+export function ItemIcon({
+  item,
+  quality,
+}: {
+  item: Item;
+  quality: number | null;
+}) {
+  const src = desktop
+    ? `${convertFileSrc(item.id, 'icon')}${quality ? `?quality=${quality}` : ''}`
+    : null;
+  const [failed, setFailed] = useState<string | null>(null);
+  const showImage = src !== null && failed !== src;
+  return (
+    <span
+      className={`item-icon ${item.tier ? `tier-${item.tier}` : ''} ${showImage ? 'with-image' : ''}`}
+    >
+      {showImage ? (
+        <img
+          src={src}
+          alt=""
+          loading="lazy"
+          decoding="async"
+          onError={() => setFailed(src)}
+        />
+      ) : (
+        <Boxes size={20} />
+      )}
+      <small>{item.tier ? `T${item.tier}` : '—'}</small>
+    </span>
   );
 }

@@ -110,6 +110,11 @@ export function SettingsPage({
           implementada. Preços manuais disponíveis.
         </p>
         <p>
+          Ícones: serviço oficial render.albiononline.com, acessado pelo core
+          Rust e guardado em cache local; sem conexão, itens já vistos continuam
+          com ícone.
+        </p>
+        <p>
           Captura de rede e OCR: ausentes. Nenhum privilégio administrativo é
           necessário.
         </p>
