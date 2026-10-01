@@ -1,6 +1,11 @@
 fn main() {
     tauri_build::try_build(tauri_build::Attributes::new().app_manifest(
-        tauri_build::AppManifest::new().commands(&["dispatch", "export_session", "import_catalog"]),
+        tauri_build::AppManifest::new().commands(&[
+            "dispatch",
+            "export_session",
+            "import_catalog",
+            "refresh_market_prices",
+        ]),
     ))
     .expect("Tauri build failed");
 }

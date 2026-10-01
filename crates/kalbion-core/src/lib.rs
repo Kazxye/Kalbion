@@ -5,6 +5,7 @@ mod error;
 pub mod icons;
 pub mod import;
 pub mod licensing;
+pub mod market;
 mod migrations;
 pub mod store;
 pub use error::{Error, Result};

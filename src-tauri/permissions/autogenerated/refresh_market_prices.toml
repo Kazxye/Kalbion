@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-refresh-market-prices"
+description = "Enables the refresh_market_prices command without any pre-configured scope."
+commands.allow = ["refresh_market_prices"]
+
+[[permission]]
+identifier = "deny-refresh-market-prices"
+description = "Denies the refresh_market_prices command without any pre-configured scope."
+commands.deny = ["refresh_market_prices"]

@@ -1,8 +1,6 @@
-//! Data sources that are not the user typing: the simulator and the market price contract.
+//! Simulated loot for trying the app without real data. Market prices live in `market`.
 use crate::catalog;
-use crate::domain::{now, LootReceived, Origin, Price};
-use crate::error::{invalid, Result};
-use serde::Serialize;
+use crate::domain::{now, LootReceived, Origin};
 
 pub const SIMULATOR_SOURCE: &str = "kalbion.simulator.v1";
 
@@ -24,23 +22,4 @@ pub fn simulated(session_id: &str) -> Vec<LootReceived> {
             item: entry.item,
         })
         .collect()
-}
-
-#[derive(Debug, Serialize)]
-pub struct PriceRequest {
-    pub item_id: String,
-    pub quality: Option<u8>,
-    pub server: String,
-    pub city: String,
-}
-pub trait MarketPrices {
-    fn quote(&self, request: &PriceRequest) -> Result<Option<Price>>;
-}
-pub struct AlbionDataProject;
-impl MarketPrices for AlbionDataProject {
-    fn quote(&self, _request: &PriceRequest) -> Result<Option<Price>> {
-        Err(invalid(
-            "Consulta Albion Data Project ainda não implementada; use preço manual",
-        ))
-    }
 }

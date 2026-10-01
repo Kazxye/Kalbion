@@ -51,6 +51,15 @@ Os dados desses dumps derivam de arquivos do jogo, de propriedade da Sandbox Int
 
 Os ícones vêm do serviço oficial de renderização da SBI (`render.albiononline.com`, 64 px, por item e quality) e passam pelo Rust: o webview pede `icon://localhost/<UniqueName>?quality=N` (`http://icon.localhost/...` no Windows) e nunca acessa a internet diretamente. Cache em disco no diretório de cache do app (`~/.cache/io.kalbion.desktop/icons` no Linux), válido por 30 dias e usado também offline. Itens inexistentes (404) são lembrados por 7 dias, porque o serviço demora a respondê-los; timeouts (15 s) e falhas de rede são repetidos após 2 minutos. No máximo 6 downloads simultâneos, resposta limitada a 512 KB e conferida como PNG. Sem ícone disponível, a interface mostra o ícone genérico com o tier e tenta de novo em segundo plano a cada 130 s enquanto a linha estiver visível, trocando a imagem só quando ela carrega. Falhas de conexão (como keep-alive fechado pelo servidor) são repetidas uma vez na hora.
 
+## Preços de mercado (Albion Data Project)
+
+**Loot → Atualizar preços** consulta o [Albion Data Project](https://www.albion-online-data.com/) (dados enviados por jogadores, API pública e somente leitura) no servidor e na cidade da sessão. O preço usado é a **menor oferta de venda** (`sell_price_min`) para o item e a quality exatos; a interface mostra a fonte e a idade do dado (`ADP, há 3 h`; acima de 24 h, marcado como antigo).
+
+- **Manual prevalece:** a atualização nunca substitui um preço manual, nem um digitado enquanto a consulta estava em andamento. Salvar um preço sobre um preço ADP o torna manual; remover o preço deixa a próxima atualização preenchê-lo.
+- **Ausência não é zero:** item sem oferta continua sem preço (um preço ADP anterior é mantido, com a idade dele). Quality desconhecida não recebe cotação, porque o mercado é por quality; só aceita preço manual.
+- **Instantâneo:** como o preço manual, o preço ADP fica gravado na sessão (`recorded_at` e `observed_at`); uma sessão encerrada não muda com o mercado até alguém atualizar de novo.
+- **Rede:** o core Rust fala com um host fixo por servidor (`west`, `europe` e `east.albion-online-data.com`), somente HTTPS, sem redirecionamentos, timeout de 15 s, resposta limitada a 4 MB e listas de itens divididas abaixo do limite de URL. Cotações (inclusive "sem oferta") ficam 5 minutos em cache de memória. HTTP 429 pausa todas as consultas pelo `Retry-After` (padrão 60 s, máximo 10 min). A consulta roda fora do lock do banco, com comando IPC próprio (`refresh_market_prices`). Falhas aparecem como "indisponível", nunca como preço.
+
 ## Modelo de dados
 
 - **Item:** identificado pelo `UniqueName` do Albion (`T5_BAG@1`). Tier e enchantment são derivados do ID; itens como `UNIQUE_HIDEOUT` não têm tier.
@@ -85,7 +94,7 @@ Os ícones vêm do serviço oficial de renderização da SBI (`render.albiononli
 
 - Banco: `~/.local/share/io.kalbion.desktop/kalbion.db` (Linux) ou `%APPDATA%\io.kalbion.desktop\kalbion.db` (Windows).
 - Log JSON: subpasta `logs/kalbion.log` do mesmo diretório no Linux; no Windows, o caminho aparece em **Configurações**. Rotaciona ao atingir 5 MB, inclusive durante o uso (mantém `kalbion.log.1`); falha de gravação aparece em Configurações. Sem senhas, chaves, tokens ou payloads importados.
-- Migrations rodam ao abrir o banco, uma transação por versão. Antes de atualizar um banco existente, uma cópia consistente é gravada ao lado (`kalbion-v1-backup-<data>.db`). Bancos de versões futuras são recusados.
+- Migrations rodam ao abrir o banco, uma transação por versão. Antes de atualizar um banco existente, uma cópia consistente é gravada ao lado (`kalbion-v<versão anterior>-backup-<data>.db`). Bancos de versões futuras são recusados.
 - Backup manual: fechar o app e copiar o diretório inteiro, incluindo arquivos `-wal`/`-shm` se existirem.
 
 ## Licenciamento (KeyAuth)
@@ -105,6 +114,7 @@ Política: sem validação offline inventada; indisponibilidade é estado distin
 ```bash
 npm run build                                       # typecheck + Vite
 cargo test --workspace
+cargo test -p kalbion-core --test market -- --ignored   # opcional: consulta o ADP real
 cargo clippy --workspace --all-targets -- -D warnings
 cargo fmt --all -- --check
 npx prettier --check src scripts
@@ -115,14 +125,17 @@ Teste desktop (Linux, WebKitWebDriver instalado), sempre com diretório de dados
 ```bash
 cargo install tauri-driver --locked
 npm run tauri build -- --debug --no-bundle
-XDG_DATA_HOME=/tmp/kalbion-test tauri-driver --port 4446 --native-port 4447   # outro terminal
+XDG_DATA_HOME=/tmp/kalbion-test XDG_CACHE_HOME=/tmp/kalbion-test-cache \
+  KALBION_ADP_URL=http://127.0.0.1:4448 tauri-driver --port 4446 --native-port 4447   # outro terminal
 node scripts/desktop-smoke.mjs     # KALBION_SCREENSHOTS=1 grava capturas em /tmp (opcional)
 ```
 
-O teste usa a interface e o IPC reais: sessão, simulação, ícones (carregados ou genéricos, nunca quebrados), preço, totais por jogador, ledger, divisão, filtros, importação inválida e replay, loot manual pelo catálogo, anulação, encerramento, configurações e persistência após reiniciar o processo. O diálogo nativo de arquivos (export e importação de catálogo) não é automatizado.
+`KALBION_ADP_URL` só tem efeito em builds de debug: aponta o app para o ADP simulado que o próprio script sobe na porta 4448, então o teste de preços é determinístico e não usa a rede. Capturas de tela pelo WebKitWebDriver podem exigir `GDK_BACKEND=x11` no tauri-driver.
+
+O teste usa a interface e o IPC reais: sessão, simulação, ícones (carregados ou genéricos, nunca quebrados), preço manual, atualização de preços pelo ADP simulado (manual prevalece, quality desconhecida fica sem preço, idade exibida), totais por jogador, ledger, divisão, filtros, importação inválida e replay, loot manual pelo catálogo, anulação, encerramento, configurações e persistência após reiniciar o processo. O diálogo nativo de arquivos (export e importação de catálogo) não é automatizado.
 
 ## Estado
 
-- Implementado: sessões, loot com fontes explícitas, ícones oficiais com cache, importação v1/v2, deduplicação persistente, filtros e totais, preços manuais por item e quality, anulação de loot, ledger com estorno, divisão, catálogo importável, exportação JSON/CSV, configurações, log em arquivo.
+- Implementado: sessões, loot com fontes explícitas, ícones oficiais com cache, importação v1/v2, deduplicação persistente, filtros e totais, preços manuais por item e quality, preços do Albion Data Project (manual prevalece), anulação de loot, ledger com estorno, divisão, catálogo importável, exportação JSON/CSV, configurações, log em arquivo.
 - Não implementado (páginas marcadas na interface): crafting, financeiro consolidado, composições.
-- Pendente: preços do Albion Data Project (contrato `MarketPrices` existe, adaptador recusa), KeyAuth real, validação no Windows, paginação de sessões muito grandes.
+- Pendente: KeyAuth real, validação no Windows, paginação de sessões muito grandes.

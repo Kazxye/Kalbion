@@ -27,9 +27,11 @@ export interface LootEvent {
   quality: number | null;
   quantity: number;
 }
+/** A manual price always prevails over the Albion Data Project for the same item and quality. */
+export type PriceSource = 'manual' | 'albion_data';
 export interface Price {
   unit_silver: number;
-  source: 'manual';
+  source: PriceSource;
   server: string;
   city: string;
   recorded_at: string;
@@ -108,6 +110,12 @@ export interface Bootstrap {
 export interface Share {
   player: string;
   silver: number;
+}
+export interface MarketRefresh {
+  updated: number;
+  unavailable: number;
+  manual_kept: number;
+  unknown_quality: number;
 }
 export interface InsertResult {
   inserted: number;

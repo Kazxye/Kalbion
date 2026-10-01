@@ -130,8 +130,11 @@ export function SettingsPage({
         <dl className="facts">
           <dt>Preços</dt>
           <dd>
-            Manuais. Albion Data Project tem contrato preparado, consulta ainda
-            não implementada.
+            Manuais ou do Albion Data Project (botão Atualizar preços no Loot):
+            menor oferta de venda na cidade da sessão, com a idade do dado. O
+            preço manual sempre prevalece; itens de qualidade desconhecida só
+            aceitam preço manual. Dados comunitários podem estar atrasados ou
+            incompletos.
           </dd>
           <dt>Ícones</dt>
           <dd>

@@ -1,6 +1,7 @@
 use crate::catalog::{self, CatalogInfo, ParsedCatalog};
 use crate::domain::*;
 use crate::error::{invalid, Error, Result};
+use crate::market::Quote;
 use crate::{adapters, import, migrations};
 use rusqlite::types::{FromSql, FromSqlError, FromSqlResult, ToSqlOutput, ValueRef};
 use rusqlite::{params, Connection, OptionalExtension, Row, ToSql};
@@ -19,6 +20,25 @@ pub struct View {
     pub full_totals: Totals,
     pub ledger: Vec<LedgerEntry>,
     pub finance: Finance,
+}
+/// What a market refresh will ask for, computed under the store lock so the network request
+/// itself can run without holding it.
+#[derive(Debug, Clone)]
+pub struct MarketPlan {
+    pub server: String,
+    pub city: String,
+    /// Item/quality pairs without a manual price.
+    pub wanted: Vec<(String, u8)>,
+}
+#[derive(Debug, Default, Serialize)]
+pub struct MarketRefresh {
+    pub updated: usize,
+    /// Pairs the market has no current sell order for; an older market price, if any, is kept.
+    pub unavailable: usize,
+    pub manual_kept: usize,
+    /// Pairs whose quality was not reported; market data is per quality, so only a manual
+    /// price can cover them.
+    pub unknown_quality: usize,
 }
 #[derive(Debug, Serialize)]
 pub struct InsertResult {
@@ -56,8 +76,14 @@ impl FromSql for PriceSource {
     fn column_result(value: ValueRef<'_>) -> FromSqlResult<Self> {
         match value.as_str()? {
             "manual" => Ok(PriceSource::Manual),
+            "albion_data" => Ok(PriceSource::AlbionData),
             _ => Err(from_sql_error(invalid("Origem de preço desconhecida"))),
         }
+    }
+}
+impl ToSql for PriceSource {
+    fn to_sql(&self) -> rusqlite::Result<ToSqlOutput<'_>> {
+        Ok(self.as_str().into())
     }
 }
 
@@ -618,6 +644,138 @@ impl Store {
         tracing::info!(operation = "price_updated", %session_id);
         Ok(())
     }
+    pub fn market_plan(&self, session_id: &str) -> Result<MarketPlan> {
+        let session = self.session(session_id)?;
+        let mut wanted = Vec::new();
+        for row in self.rows(session_id, &Filter::default())? {
+            let manual = row
+                .price
+                .is_some_and(|price| price.source == PriceSource::Manual);
+            if let Some(quality) = row.event.quality.filter(|_| !manual) {
+                wanted.push((row.event.item.id, quality));
+            }
+        }
+        wanted.sort();
+        wanted.dedup();
+        Ok(MarketPlan {
+            server: session.server,
+            city: session.city,
+            wanted,
+        })
+    }
+    /// Stores market quotes as the session's prices. A manual price is never replaced, even
+    /// one typed while the quotes were being fetched. Like manual prices, quotes are a
+    /// snapshot: a closed session does not drift with the market until refreshed again.
+    pub fn apply_market_quotes(
+        &mut self,
+        session_id: &str,
+        plan: &MarketPlan,
+        quotes: &[Quote],
+    ) -> Result<MarketRefresh> {
+        let session = self.session(session_id)?;
+        if session.server != plan.server || session.city != plan.city {
+            return Err(invalid(
+                "Contexto de mercado da sessão mudou; atualize de novo",
+            ));
+        }
+        let mut rows = self.rows(session_id, &Filter::default())?;
+        let mut result = MarketRefresh::default();
+        let mut pairs: Vec<(Option<u8>, &str, bool)> = rows
+            .iter()
+            .map(|row| {
+                let manual = row
+                    .price
+                    .as_ref()
+                    .is_some_and(|price| price.source == PriceSource::Manual);
+                (row.event.quality, row.event.item.id.as_str(), manual)
+            })
+            .collect();
+        pairs.sort();
+        pairs.dedup();
+        result.unknown_quality = pairs
+            .iter()
+            .filter(|(quality, ..)| quality.is_none())
+            .count();
+        result.manual_kept = pairs
+            .iter()
+            .filter(|(quality, _, manual)| quality.is_some() && *manual)
+            .count();
+        let recorded_at = now();
+        let mut prices = Vec::new();
+        for (item_id, quality) in &plan.wanted {
+            if pairs
+                .iter()
+                .any(|pair| pair.0 == Some(*quality) && pair.1 == item_id && pair.2)
+            {
+                continue;
+            }
+            let Some(quote) = quotes
+                .iter()
+                .find(|quote| quote.item_id == *item_id && quote.quality == *quality)
+            else {
+                result.unavailable += 1;
+                continue;
+            };
+            money(quote.unit_silver)?;
+            normalize_timestamp(&quote.observed_at)?;
+            prices.push((
+                item_id.clone(),
+                *quality,
+                Price {
+                    unit_silver: quote.unit_silver,
+                    source: PriceSource::AlbionData,
+                    server: session.server.clone(),
+                    city: session.city.clone(),
+                    recorded_at: recorded_at.clone(),
+                    observed_at: Some(quote.observed_at.clone()),
+                },
+            ));
+        }
+        for (item_id, quality, price) in &prices {
+            for row in rows
+                .iter_mut()
+                .filter(|row| same_priced_item(row, item_id, Some(*quality)))
+            {
+                row.price = Some(price.clone());
+            }
+        }
+        totals(&rows)?;
+        let transaction = self.connection.transaction()?;
+        for (item_id, quality, price) in &prices {
+            transaction.execute(
+                "INSERT INTO item_prices (session_id, item_id, quality, unit_silver, source,
+                 server, city, recorded_at, observed_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
+                 ON CONFLICT(session_id, item_id, quality) DO UPDATE SET
+                 unit_silver = excluded.unit_silver, source = excluded.source,
+                 server = excluded.server, city = excluded.city,
+                 recorded_at = excluded.recorded_at, observed_at = excluded.observed_at
+                 WHERE item_prices.source <> 'manual'",
+                params![
+                    session_id,
+                    item_id,
+                    quality,
+                    price.unit_silver,
+                    price.source,
+                    price.server,
+                    price.city,
+                    price.recorded_at,
+                    price.observed_at
+                ],
+            )?;
+        }
+        transaction.commit()?;
+        result.updated = prices.len();
+        tracing::info!(
+            operation = "market_prices_applied",
+            %session_id,
+            updated = result.updated,
+            unavailable = result.unavailable,
+            manual_kept = result.manual_kept,
+            unknown_quality = result.unknown_quality
+        );
+        Ok(result)
+    }
     pub fn rows(&self, session_id: &str, filter: &Filter) -> Result<Vec<LootRow>> {
         filter.validate()?;
         let mut statement = self.connection.prepare(&format!(
@@ -824,10 +982,11 @@ impl Store {
             record[14] = event.quantity.to_string();
             if let Some(price) = price {
                 record[15] = price.unit_silver.to_string();
-                record[16] = "manual".into();
+                record[16] = price.source.as_str().into();
                 record[17] = price.server.clone();
                 record[18] = price.city.clone();
                 record[19] = price.recorded_at.clone();
+                record[24] = price.observed_at.clone().unwrap_or_default();
             }
             writer.write_record(record)?;
         }
@@ -851,7 +1010,7 @@ impl Store {
         String::from_utf8(bytes).map_err(|_| invalid("Falha de codificação CSV"))
     }
 }
-const CSV_HEADER: [&str; 24] = [
+const CSV_HEADER: [&str; 25] = [
     "record_type",
     "id",
     "session_id",
@@ -876,6 +1035,7 @@ const CSV_HEADER: [&str; 24] = [
     "amount",
     "reverses",
     "description",
+    "price_observed_at",
 ];
 /// Neutralizes spreadsheet formulas in untrusted text.
 fn csv_safe(value: &str) -> String {

@@ -4,7 +4,7 @@ use rusqlite::{params, Connection, OptionalExtension, Transaction};
 use serde::Deserialize;
 use std::path::Path;
 
-pub const LATEST: u32 = 2;
+pub const LATEST: u32 = 3;
 
 /// Applies pending migrations, one transaction per version. Before upgrading an existing
 /// database file, a consistent copy is written next to it so a failed or unwanted upgrade
@@ -24,6 +24,7 @@ pub fn run(connection: &mut Connection, path: &Path) -> Result<()> {
         match target {
             1 => transaction.execute_batch(include_str!("../migrations/001_initial.sql"))?,
             2 => to_v2(&transaction)?,
+            3 => transaction.execute_batch(include_str!("../migrations/003_market_prices.sql"))?,
             _ => unreachable!("every version up to LATEST has a migration"),
         }
         transaction.pragma_update(None, "user_version", target)?;

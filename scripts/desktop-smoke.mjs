@@ -1,6 +1,39 @@
 import assert from 'node:assert/strict';
 import { writeFile } from 'node:fs/promises';
+import { createServer } from 'node:http';
 import path from 'node:path';
+
+// Stand-in for the Albion Data Project, so price refreshes are deterministic and offline.
+// The app reaches it only when tauri-driver was started with KALBION_ADP_URL (debug builds).
+const adpPort = Number(process.env.KALBION_ADP_PORT || 4448);
+const adpRequests = [];
+const observed = new Date(Date.now() - 2 * 3_600_000)
+  .toISOString()
+  .slice(0, 19);
+const adp = createServer((request, response) => {
+  adpRequests.push(request.url);
+  const url = new URL(request.url, 'http://adp');
+  const items = decodeURIComponent(
+    url.pathname.replace('/api/v2/stats/prices/', '').replace('.json', ''),
+  ).split(',');
+  const qualities = url.searchParams.get('qualities').split(',').map(Number);
+  const city = url.searchParams.get('locations');
+  response.setHeader('Content-Type', 'application/json');
+  response.end(
+    JSON.stringify(
+      items.flatMap((item_id) =>
+        qualities.map((quality) => ({
+          item_id,
+          city,
+          quality,
+          sell_price_min: 1000 + quality * 10,
+          sell_price_min_date: observed,
+        })),
+      ),
+    ),
+  );
+});
+await new Promise((resolve) => adp.listen(adpPort, '127.0.0.1', resolve));
 
 const endpoint = process.env.KALBION_WEBDRIVER_URL || 'http://127.0.0.1:4446';
 let session;
@@ -142,6 +175,55 @@ try {
   await click('Salvar preço');
   await until(() =>
     execute(`return !document.querySelector('[role="dialog"]')`),
+  );
+  await click('Atualizar preços');
+  step = 'market price refresh';
+  await until(() =>
+    execute(
+      `return document.body.textContent.includes('Albion Data Project: ') || document.querySelector('[role="alert"]')?.textContent`,
+    ),
+  );
+  assert.ok(
+    adpRequests.length > 0,
+    `the app did not call the mock market; start tauri-driver with KALBION_ADP_URL=http://127.0.0.1:${adpPort}`,
+  );
+  assert.ok(
+    adpRequests.every((url) => url.includes('locations=Bridgewatch')),
+    'refresh uses the session market',
+  );
+  const priced = await ipc({
+    operation: 'view',
+    session_id: sessionId,
+    filter: {},
+  });
+  for (const row of priced.rows) {
+    if (row.price?.source === 'manual') {
+      assert.equal(row.price.unit_silver, 100, 'manual price prevails');
+    } else if (row.event.quality === null) {
+      assert.equal(row.price, null, 'unknown quality is never market-priced');
+    } else {
+      assert.equal(row.price.source, 'albion_data');
+      assert.equal(row.price.unit_silver, 1000 + row.event.quality * 10);
+      assert.equal(row.price.observed_at, `${observed}.000000Z`);
+    }
+  }
+  // The simulation has 5 known qualities; the manual price may have taken one of them.
+  const marketPriced = priced.rows.filter(
+    (row) => row.price?.source === 'albion_data',
+  ).length;
+  const manualKnown = priced.rows.filter(
+    (row) => row.price?.source === 'manual' && row.event.quality !== null,
+  ).length;
+  assert.equal(marketPriced, 5 - manualKnown);
+  assert.ok(
+    await execute(
+      `return document.body.textContent.includes('Albion Data Project: ' + arguments[0] + ' preços atualizados')`,
+      [marketPriced],
+    ),
+    'refresh summary shown',
+  );
+  await until(() =>
+    execute(`return document.body.textContent.includes('ADP, há 2 h')`),
   );
   await click('Por jogador');
   await until(() =>
@@ -347,11 +429,12 @@ try {
     'Martlock',
   );
   console.log(
-    'PASS: desktop UI, real IPC, simulation, manual loot, catalog search, item icons, void/restore, ledger reversal, session switching, import validation/replay, prices, player totals, ledger, split, filters, empty/error states, session close/reopen, settings, disabled licensing, persistence after process restart.',
+    'PASS: desktop UI, real IPC, simulation, manual loot, catalog search, item icons, void/restore, ledger reversal, session switching, import validation/replay, manual and market prices, player totals, ledger, split, filters, empty/error states, session close/reopen, settings, disabled licensing, persistence after process restart.',
   );
 } catch (error) {
   console.error(`FAILED at step: ${step}`);
   throw error;
 } finally {
   if (session) await call('DELETE', `/session/${session}`).catch(() => {});
+  adp.close();
 }

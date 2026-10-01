@@ -662,6 +662,9 @@ tfoot td {
 .price-set small {
   color: var(--faint);
 }
+.price-set small.stale {
+  color: var(--warn);
+}
 .when small {
   display: block;
   color: var(--faint);

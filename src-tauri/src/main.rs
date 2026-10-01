@@ -5,6 +5,8 @@ use kalbion_core::{
     domain::*,
     icons::IconCache,
     licensing::{KeyAuth, LicenseProvider},
+    market::AlbionDataProject,
+    store::MarketRefresh,
     Store,
 };
 use serde::Deserialize;
@@ -271,6 +273,45 @@ async fn import_catalog(
         .map_err(|error| report("catalog_import_failed", error))?;
     Ok(Some(info))
 }
+/// The network request runs without the database lock, so the rest of the app stays usable
+/// while the Albion Data Project answers (up to its timeout).
+#[tauri::command]
+async fn refresh_market_prices(
+    app: tauri::AppHandle,
+    state: tauri::State<'_, AppState>,
+    session_id: String,
+) -> std::result::Result<MarketRefresh, String> {
+    let plan = state
+        .0
+        .lock()
+        .map_err(|_| "Banco indisponível")?
+        .market_plan(&session_id)
+        .map_err(|error| report("market_refresh_failed", error))?;
+    let request = plan.clone();
+    let quotes = tauri::async_runtime::spawn_blocking(move || {
+        app.state::<AlbionDataProject>()
+            .quotes(&request.server, &request.city, &request.wanted)
+    })
+    .await
+    .map_err(|_| "Falha ao consultar preços")?
+    .map_err(|error| report("market_refresh_failed", error))?;
+    state
+        .0
+        .lock()
+        .map_err(|_| "Banco indisponível")?
+        .apply_market_quotes(&session_id, &plan, &quotes)
+        .map_err(|error| report("market_refresh_failed", error))
+}
+/// Debug builds can point at a local mock (desktop smoke test); release builds always use
+/// the official hosts.
+fn market_source() -> AlbionDataProject {
+    #[cfg(debug_assertions)]
+    if let Ok(url) = std::env::var("KALBION_ADP_URL") {
+        tracing::warn!(operation = "market_source_overridden", %url);
+        return AlbionDataProject::with_base_url(url);
+    }
+    AlbionDataProject::default()
+}
 /// Serves `icon://localhost/<UniqueName>?quality=N` (Windows: `http://icon.localhost/...`).
 /// Anything unexpected becomes a 4xx/5xx, and the UI falls back to its generic icon.
 fn icon_response(
@@ -344,6 +385,7 @@ fn main() {
             std::fs::create_dir_all(&directory)?;
             let store = Store::open(directory.join("kalbion.db"))?;
             app.manage(AppState(Mutex::new(store)));
+            app.manage(market_source());
             match IconCache::new(app.path().app_cache_dir()?.join("icons")) {
                 Ok(icons) => {
                     app.manage(icons);
@@ -365,7 +407,8 @@ fn main() {
         .invoke_handler(tauri::generate_handler![
             dispatch,
             export_session,
-            import_catalog
+            import_catalog,
+            refresh_market_prices
         ])
         .run(tauri::generate_context!());
     if let Err(error) = result {

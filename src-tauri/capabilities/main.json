@@ -2,5 +2,10 @@
   "identifier": "main",
   "description": "Only the local main window can access Kalbion commands.",
   "windows": ["main"],
-  "permissions": ["allow-dispatch", "allow-export-session", "allow-import-catalog"]
+  "permissions": [
+    "allow-dispatch",
+    "allow-export-session",
+    "allow-import-catalog",
+    "allow-refresh-market-prices"
+  ]
 }

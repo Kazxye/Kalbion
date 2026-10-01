@@ -2,6 +2,9 @@
 pub enum Error {
     #[error("{0}")]
     Validation(String),
+    /// An external service could not answer; distinct from invalid input.
+    #[error("{0}")]
+    Unavailable(String),
     #[error("Falha no banco de dados local")]
     Database(#[from] rusqlite::Error),
     #[error("JSON inválido: {0}")]

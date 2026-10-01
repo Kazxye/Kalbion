@@ -4,15 +4,16 @@ import {
   Boxes,
   FlaskConical,
   Plus,
+  RefreshCw,
   RotateCcw,
   Search,
   X,
 } from 'lucide-react';
 import { request } from './api';
 import { EmptyState, Field, InlineError } from './components';
-import { date, qualities, silver, tierLabel } from './format';
+import { age, date, isStale, qualities, silver, tierLabel } from './format';
 import { ItemIcon, OriginTag, QualityMark, TierBadge } from './item';
-import type { Filter, Item, LootRow, View } from './types';
+import type { Filter, Item, LootRow, Price, View } from './types';
 
 export const emptyFilter: Filter = {
   player: '',
@@ -60,6 +61,7 @@ export function LootView({
   closed,
   simulate,
   register,
+  refreshPrices,
   price,
   toggleVoid,
 }: {
@@ -71,6 +73,7 @@ export function LootView({
   closed: boolean;
   simulate: () => void;
   register: () => void;
+  refreshPrices: () => void;
   price: (row: LootRow) => void;
   toggleVoid: (row: LootRow) => void;
 }) {
@@ -135,6 +138,14 @@ export function LootView({
           </button>
         </div>
         <div className="toolbar-actions">
+          <button
+            disabled={busy || !view.rows.length}
+            title={`Consulta o Albion Data Project em ${view.session.city}. Preços manuais prevalecem.`}
+            onClick={refreshPrices}
+          >
+            <RefreshCw size={15} aria-hidden />
+            Atualizar preços
+          </button>
           <button
             disabled={busy || closed}
             title={closed ? closedHint : undefined}
@@ -319,16 +330,12 @@ function LootRowView({
           <span className="price-set">
             <button
               disabled={busy}
-              aria-label={`Alterar preço de ${event.item.name}: ${silver(row.price.unit_silver)} silver`}
+              aria-label={`Alterar preço de ${event.item.name}: ${silver(row.price.unit_silver)} silver, ${priceOrigin(row.price)}`}
               onClick={() => price(row)}
             >
               {silver(row.price.unit_silver)} s
             </button>
-            <small
-              title={`Preço manual em ${row.price.city}, ${date(row.price.recorded_at)}`}
-            >
-              manual, {row.price.city}
-            </small>
+            <PriceOrigin price={row.price} />
           </span>
         ) : (
           <button
@@ -371,6 +378,28 @@ function LootRowView({
   );
 }
 
+/** Short provenance text: "manual, Lymhurst" or "ADP, há 3 h". */
+function priceOrigin(price: Price) {
+  if (price.source === 'manual' || !price.observed_at)
+    return `manual, ${price.city}`;
+  return `ADP, ${age(price.observed_at)}${isStale(price.observed_at) ? ', antigo' : ''}`;
+}
+function PriceOrigin({ price }: { price: Price }) {
+  const market = price.source === 'albion_data' && price.observed_at;
+  return (
+    <small
+      className={market && isStale(market) ? 'stale' : undefined}
+      title={
+        market
+          ? `Albion Data Project: menor oferta de venda em ${price.city}, observada em ${date(market)}; consultada em ${date(price.recorded_at)}`
+          : `Preço manual em ${price.city}, ${date(price.recorded_at)}`
+      }
+    >
+      {priceOrigin(price)}
+    </small>
+  );
+}
+
 export function PlayersView({ view }: { view: View }) {
   const players = Object.entries(view.full_totals.players).sort(
     ([, a], [, b]) => b.estimated_silver - a.estimated_silver,
@@ -379,7 +408,8 @@ export function PlayersView({ view }: { view: View }) {
     <>
       <p className="page-intro">
         Totais de loot por jogador nesta sessão, sem anulados. Os valores são
-        estimativas pelos preços manuais, não silver recebido.
+        estimativas pelos preços da sessão (manuais ou do Albion Data Project),
+        não silver recebido.
       </p>
       <div className="table-scroll">
         <table>

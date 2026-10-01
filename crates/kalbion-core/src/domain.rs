@@ -166,6 +166,17 @@ pub struct Session {
     pub server: String,
     pub city: String,
 }
+pub const SERVERS: [&str; 3] = ["americas", "europe", "asia"];
+/// Market locations, spelled as the game and the Albion Data Project spell them.
+pub const CITIES: [&str; 7] = [
+    "Bridgewatch",
+    "Martlock",
+    "Lymhurst",
+    "Fort Sterling",
+    "Thetford",
+    "Caerleon",
+    "Brecilien",
+];
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 pub struct Settings {
@@ -182,18 +193,7 @@ impl Default for Settings {
 }
 impl Settings {
     pub fn validate(&self) -> Result<()> {
-        if !["americas", "europe", "asia"].contains(&self.server.as_str())
-            || ![
-                "Bridgewatch",
-                "Martlock",
-                "Lymhurst",
-                "Fort Sterling",
-                "Thetford",
-                "Caerleon",
-                "Brecilien",
-            ]
-            .contains(&self.city.as_str())
-        {
+        if !SERVERS.contains(&self.server.as_str()) || !CITIES.contains(&self.city.as_str()) {
             return Err(invalid("Servidor ou cidade inválido"));
         }
         Ok(())
@@ -203,7 +203,18 @@ impl Settings {
 #[derive(Debug, Clone, Copy, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum PriceSource {
+    /// Typed by the user; always prevails over market data for the same item and quality.
     Manual,
+    /// Lowest sell order reported by the Albion Data Project.
+    AlbionData,
+}
+impl PriceSource {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Manual => "manual",
+            Self::AlbionData => "albion_data",
+        }
+    }
 }
 #[derive(Debug, Clone, Serialize)]
 pub struct Price {
@@ -213,7 +224,7 @@ pub struct Price {
     pub city: String,
     /// When Kalbion stored the price.
     pub recorded_at: String,
-    /// When the market observed it; only external sources know this.
+    /// When the market observed it; only external sources know this, and they always do.
     pub observed_at: Option<String>,
 }
 #[derive(Debug, Clone, Serialize)]

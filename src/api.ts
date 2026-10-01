@@ -1,5 +1,5 @@
 import { invoke, isTauri } from '@tauri-apps/api/core';
-import type { CatalogInfo } from './types';
+import type { CatalogInfo, MarketRefresh } from './types';
 
 export const desktop = isTauri();
 const disconnected =
@@ -19,4 +19,9 @@ export async function exportSession(sessionId: string, format: string) {
 export async function importCatalog() {
   if (!desktop) throw new Error(disconnected);
   return invoke<CatalogInfo | null>('import_catalog');
+}
+/** Fetches Albion Data Project quotes; the request runs outside the database lock. */
+export async function refreshMarketPrices(sessionId: string) {
+  if (!desktop) throw new Error(disconnected);
+  return invoke<MarketRefresh>('refresh_market_prices', { sessionId });
 }

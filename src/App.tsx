@@ -1,6 +1,12 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { Archive, Plus } from 'lucide-react';
-import { desktop, exportSession, importCatalog, request } from './api';
+import {
+  desktop,
+  exportSession,
+  importCatalog,
+  refreshMarketPrices,
+  request,
+} from './api';
 import {
   ConfirmDialog,
   Dialog,
@@ -11,7 +17,13 @@ import {
   type Confirmation,
 } from './components';
 import { LedgerForm, LedgerView, SplitForm } from './finance';
-import { qualityLabel, serverNames, silver } from './format';
+import {
+  age,
+  marketSummary,
+  qualityLabel,
+  serverNames,
+  silver,
+} from './format';
 import {
   emptyFilter,
   ImportForm,
@@ -238,6 +250,9 @@ export default function App() {
           )
         }
         register={() => setModal('manual')}
+        refreshPrices={() =>
+          void act(async () => marketSummary(await refreshMarketPrices(active)))
+        }
         price={setPricing}
         toggleVoid={toggleVoid}
       />
@@ -464,6 +479,16 @@ export default function App() {
               <strong>{pricing.event.item.name}</strong>, qualidade{' '}
               {qualityLabel(pricing.event.quality).toLowerCase()}
             </p>
+            {pricing.price?.source === 'albion_data' &&
+              pricing.price.observed_at && (
+                <p className="help">
+                  Preço atual: {silver(pricing.price.unit_silver)} s, menor
+                  oferta de venda no Albion Data Project, observada{' '}
+                  {age(pricing.price.observed_at)}. Salvar aqui cria um preço
+                  manual, que prevalece sobre o mercado; remover o preço deixa a
+                  próxima atualização preenchê-lo de novo.
+                </p>
+              )}
             <Field label="Silver por unidade (zero é um preço conhecido)">
               <input
                 autoFocus
@@ -481,7 +506,7 @@ export default function App() {
               {serverNames[session?.server ?? 'americas']}). Vale para todos os
               registros deste item com esta qualidade na sessão
               {pricing.event.quality === null
-                ? ', separada das qualidades conhecidas'
+                ? ', separada das qualidades conhecidas. Sem qualidade informada não há cotação de mercado'
                 : ''}
               .
             </p>
