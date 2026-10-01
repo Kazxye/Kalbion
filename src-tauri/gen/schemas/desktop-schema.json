@@ -189,6 +189,12 @@
           "markdownDescription": "Enables the export_session command without any pre-configured scope."
         },
         {
+          "description": "Enables the import_catalog command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-import-catalog",
+          "markdownDescription": "Enables the import_catalog command without any pre-configured scope."
+        },
+        {
           "description": "Denies the dispatch command without any pre-configured scope.",
           "type": "string",
           "const": "deny-dispatch",
@@ -199,6 +205,12 @@
           "type": "string",
           "const": "deny-export-session",
           "markdownDescription": "Denies the export_session command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the import_catalog command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-import-catalog",
+          "markdownDescription": "Denies the import_catalog command without any pre-configured scope."
         },
         {
           "description": "Default core plugins set.\n#### This default permission set includes:\n\n- `core:path:default`\n- `core:event:default`\n- `core:window:default`\n- `core:webview:default`\n- `core:app:default`\n- `core:image:default`\n- `core:resources:default`\n- `core:menu:default`\n- `core:tray:default`",

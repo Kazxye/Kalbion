@@ -909,3 +909,32 @@ tbody tr:last-child td {
     flex-wrap: wrap;
   }
 }
+tr.voided td {
+  opacity: 0.45;
+}
+tr.voided td:last-child {
+  opacity: 1;
+}
+.voided-tag {
+  color: #e0a39c;
+}
+td.unknown {
+  color: #7d8799;
+  font-style: italic;
+}
+.row-action {
+  padding: 5px 9px;
+  font-size: 10px;
+}
+td .pill + .pill {
+  margin-left: 6px;
+}
+code {
+  font-family: ui-monospace, 'Cascadia Code', monospace;
+  font-size: 11px;
+  color: #c9d3e2;
+  background: #11151d;
+  padding: 1px 5px;
+  border-radius: 4px;
+  word-break: break-all;
+}

@@ -1,4 +1,22 @@
-use kalbion_core::{adapters, domain::*, Store};
+use kalbion_core::{adapters, catalog, domain::*, Store};
+use serde_json::json;
+
+fn import_file(version: u32, events: serde_json::Value) -> String {
+    json!({ "schema_version": version, "events": events }).to_string()
+}
+fn v2_event(session_id: &str, id: &str, item_id: &str, quality: Option<u8>) -> serde_json::Value {
+    json!({
+        "id": id,
+        "origin": "observed",
+        "source": "test.import",
+        "session_id": session_id,
+        "occurred_at": "2026-10-01T12:00:00Z",
+        "player": "Alice",
+        "item": { "id": item_id, "name": "Item" },
+        "quality": quality,
+        "quantity": 1
+    })
+}
 
 #[test]
 fn replay_is_idempotent_but_identical_legitimate_loot_survives_restart() {
@@ -31,35 +49,47 @@ fn replay_is_idempotent_but_identical_legitimate_loot_survives_restart() {
     assert!(store.ingest(&[third, collision], false).is_err());
     drop(store);
     let mut store = Store::open(path).unwrap();
-    assert_eq!(store.rows(&session.id).unwrap().len(), 2);
+    assert_eq!(
+        store.rows(&session.id, &Filter::default()).unwrap().len(),
+        2
+    );
     assert_eq!(store.ingest(&[event], false).unwrap().duplicates, 1);
 }
 
 #[test]
-fn prices_are_scoped_and_estimates_never_become_cash() {
+fn prices_are_scoped_by_quality_and_estimates_never_become_cash() {
     let directory = tempfile::tempdir().unwrap();
     let path = directory.path().join("test.db");
     let mut store = Store::open(&path).unwrap();
     let session = store.create_session("Party").unwrap();
-    let item = adapters::catalog().remove(0);
-    store.manual(&session.id, "Alice", item.clone(), 2).unwrap();
-    store.manual(&session.id, "Bob", item.clone(), 3).unwrap();
-    let mut quality = item.clone();
-    quality.quality = 5;
-    store.manual(&session.id, "Alice", quality, 1).unwrap();
-    store.price(&session.id, &item.id, 1, Some(100)).unwrap();
+    store
+        .manual(&session.id, "Alice", "T4_BAG", Some(1), 2)
+        .unwrap();
+    store
+        .manual(&session.id, "Bob", "T4_BAG", Some(1), 3)
+        .unwrap();
+    store
+        .manual(&session.id, "Alice", "T4_BAG", Some(5), 1)
+        .unwrap();
+    store
+        .manual(&session.id, "Alice", "T4_BAG", None, 4)
+        .unwrap();
+    store
+        .price(&session.id, "T4_BAG", Some(1), Some(100))
+        .unwrap();
+    store.price(&session.id, "T4_BAG", None, Some(10)).unwrap();
     let view = store.view(&session.id, &Filter::default()).unwrap();
-    assert_eq!(view.totals.session.estimated_silver, 500);
+    assert_eq!(view.totals.session.estimated_silver, 540);
     assert_eq!(view.totals.session.unpriced_events, 1);
-    assert_eq!(view.totals.players["Alice"].estimated_silver, 200);
+    assert_eq!(view.totals.players["Alice"].estimated_silver, 240);
     assert_eq!(view.finance.income, 0);
-    let filter = Filter {
+    let bob = Filter {
         player: "bob".into(),
         ..Filter::default()
     };
-    let view = store.view(&session.id, &filter).unwrap();
+    let view = store.view(&session.id, &bob).unwrap();
     assert_eq!(view.totals.session.estimated_silver, 300);
-    assert_eq!(view.full_totals.session.estimated_silver, 500);
+    assert_eq!(view.full_totals.session.estimated_silver, 540);
     store
         .add_ledger(&session.id, LedgerKind::Income, "Alice", "Venda", 1001)
         .unwrap();
@@ -69,29 +99,21 @@ fn prices_are_scoped_and_estimates_never_become_cash() {
     let shares = store
         .record_split(&session.id, 901, &["Bob".into(), "Alice".into()])
         .unwrap();
-    assert_eq!(shares[0].silver, 451);
-    assert_eq!(shares[1].silver, 450);
+    assert_eq!(
+        (shares[0].player.as_str(), shares[0].silver),
+        ("Alice", 451)
+    );
+    assert_eq!((shares[1].player.as_str(), shares[1].silver), ("Bob", 450));
     assert!(store
         .record_split(&session.id, 1, &["Alice".into()])
         .is_err());
     drop(store);
     let store = Store::open(path).unwrap();
+    let view = store.view(&session.id, &Filter::default()).unwrap();
+    assert_eq!(view.finance.available, 0);
     assert_eq!(
-        store
-            .view(&session.id, &Filter::default())
-            .unwrap()
-            .finance
-            .available,
-        0
-    );
-    assert_eq!(
-        store
-            .rows(&session.id)
-            .unwrap()
-            .iter()
-            .filter(|row| row.price.is_some())
-            .count(),
-        2
+        view.rows.iter().filter(|row| row.price.is_some()).count(),
+        3
     );
 }
 
@@ -102,18 +124,15 @@ fn invalid_batches_closed_sessions_and_csv_injection_are_handled() {
     let mut events = adapters::simulated(&session.id);
     events[1].quantity = 0;
     assert!(store.ingest(&events, true).is_err());
-    assert!(store.rows(&session.id).unwrap().is_empty());
+    assert!(store
+        .rows(&session.id, &Filter::default())
+        .unwrap()
+        .is_empty());
     store
-        .manual(
-            &session.id,
-            "=HYPERLINK(123)",
-            adapters::catalog().remove(0),
-            1,
-        )
+        .manual(&session.id, "=HYPERLINK(123)", "T4_BAG", Some(1), 1)
         .unwrap();
     let csv = store.export(&session.id, "csv").unwrap();
     assert!(csv.contains("'=HYPERLINK(123)"));
-    assert!(csv.contains(",1,,"));
     store.set_closed(&session.id, true).unwrap();
     assert!(store.simulate(&session.id).is_err());
     assert!(store.export(&session.id, "json").is_ok());
@@ -122,70 +141,65 @@ fn invalid_batches_closed_sessions_and_csv_injection_are_handled() {
 }
 
 #[test]
-fn zero_price_differs_from_missing_and_import_replays() {
+fn zero_price_differs_from_missing_price() {
     let mut store = Store::open(":memory:").unwrap();
-    let session = store.create_session("Import").unwrap();
-    let event = adapters::simulated(&session.id).remove(0);
-    let json = serde_json::to_string(&adapters::ImportBatch {
-        schema_version: 1,
-        events: vec![event.clone()],
-    })
-    .unwrap();
-    assert_eq!(store.import(&session.id, &json).unwrap().inserted, 1);
-    assert_eq!(store.import(&session.id, &json).unwrap().duplicates, 1);
+    let session = store.create_session("Prices").unwrap();
     store
-        .price(&session.id, &event.item.id, event.item.quality, Some(0))
+        .manual(&session.id, "Alice", "T4_BAG", Some(2), 1)
         .unwrap();
-    assert_eq!(
+    let unpriced = |store: &Store| {
         store
             .view(&session.id, &Filter::default())
             .unwrap()
             .totals
             .session
-            .unpriced_events,
-        0
-    );
+            .unpriced_events
+    };
+    assert_eq!(unpriced(&store), 1);
     store
-        .price(&session.id, &event.item.id, event.item.quality, None)
+        .price(&session.id, "T4_BAG", Some(2), Some(0))
         .unwrap();
-    assert_eq!(
-        store
-            .view(&session.id, &Filter::default())
-            .unwrap()
-            .totals
-            .session
-            .unpriced_events,
-        1
-    );
+    assert_eq!(unpriced(&store), 0);
+    store.price(&session.id, "T4_BAG", Some(2), None).unwrap();
+    assert_eq!(unpriced(&store), 1);
+    assert!(store
+        .price(&session.id, "T4_BAG", Some(3), Some(5))
+        .is_err());
 }
 
 #[test]
 fn excessive_estimates_are_rejected_without_poisoning_persisted_data() {
     let mut store = Store::open(":memory:").unwrap();
     let session = store.create_session("Limits").unwrap();
-    let item = adapters::catalog().remove(0);
     store
-        .manual(&session.id, "Alice", item.clone(), 1_000_000)
+        .manual(&session.id, "Alice", "T4_BAG", Some(1), 1_000_000)
         .unwrap();
     assert!(store
-        .price(&session.id, &item.id, 1, Some(1_000_000_000_000))
+        .price(&session.id, "T4_BAG", Some(1), Some(1_000_000_000_000))
         .is_err());
-    assert!(store.rows(&session.id).unwrap()[0].price.is_none());
+    assert!(store.rows(&session.id, &Filter::default()).unwrap()[0]
+        .price
+        .is_none());
     store
-        .price(&session.id, &item.id, 1, Some(9_000_000_000))
+        .price(&session.id, "T4_BAG", Some(1), Some(9_000_000_000))
         .unwrap();
-    assert!(store.manual(&session.id, "Alice", item, 1).is_err());
-    assert_eq!(store.rows(&session.id).unwrap().len(), 1);
+    assert!(store
+        .manual(&session.id, "Alice", "T4_BAG", Some(1), 1)
+        .is_err());
+    assert_eq!(
+        store.rows(&session.id, &Filter::default()).unwrap().len(),
+        1
+    );
     assert!(store.export(&session.id, "json").is_ok());
 }
 
 #[test]
-fn exports_preserve_financial_context_and_settings_survive_restart() {
+fn json_export_replays_into_the_same_session_and_settings_survive_restart() {
     let directory = tempfile::tempdir().unwrap();
     let path = directory.path().join("test.db");
     let mut store = Store::open(&path).unwrap();
     store
-        .save_settings(Settings {
+        .save_settings(&Settings {
             server: "europe".into(),
             city: "Martlock".into(),
         })
@@ -206,14 +220,278 @@ fn exports_preserve_financial_context_and_settings_survive_restart() {
     assert_eq!(exported["events"].as_array().unwrap().len(), 7);
     assert_eq!(exported["ledger"][0]["amount"], 42);
     assert_eq!(exported["session"]["server"], "europe");
+    let replay = import_file(2, exported["events"].clone());
+    let result = store.import(&session.id, &replay).unwrap();
+    assert_eq!((result.inserted, result.duplicates), (0, 7));
     let csv = store.export(&session.id, "csv").unwrap();
     let records = csv::Reader::from_reader(csv.as_bytes())
         .records()
-        .collect::<std::result::Result<Vec<_>, _>>()
+        .collect::<Result<Vec<_>, _>>()
         .unwrap();
     assert_eq!(records.len(), 8);
-    assert_eq!(&records[7][21], "'=formula, with comma");
+    assert_eq!(&records[7][23], "'=formula, with comma");
     drop(store);
     let store = Store::open(path).unwrap();
     assert_eq!(store.settings().unwrap().city, "Martlock");
+}
+
+#[test]
+fn equal_instants_with_different_offsets_are_the_same_event() {
+    let mut store = Store::open(":memory:").unwrap();
+    let session = store.create_session("Offsets").unwrap();
+    let mut event = v2_event(&session.id, "e1", "T4_BAG", Some(1));
+    event["occurred_at"] = json!("2026-10-01T14:00:00+02:00");
+    assert_eq!(
+        store
+            .import(&session.id, &import_file(2, json!([event.clone()])))
+            .unwrap()
+            .inserted,
+        1
+    );
+    event["occurred_at"] = json!("2026-10-01T12:00:00.000Z");
+    assert_eq!(
+        store
+            .import(&session.id, &import_file(2, json!([event])))
+            .unwrap()
+            .duplicates,
+        1
+    );
+}
+
+#[test]
+fn items_without_tier_and_unknown_quality_are_kept_distinct() {
+    let mut store = Store::open(":memory:").unwrap();
+    let session = store.create_session("Treasure").unwrap();
+    let file = import_file(
+        2,
+        json!([
+            v2_event(&session.id, "a", "UNIQUE_HIDEOUT", None),
+            v2_event(&session.id, "b", "T5_BAG@1", Some(3)),
+        ]),
+    );
+    assert_eq!(store.import(&session.id, &file).unwrap().inserted, 2);
+    let rows = store.rows(&session.id, &Filter::default()).unwrap();
+    let hideout = rows.iter().find(|row| row.event.id == "a").unwrap();
+    assert_eq!(
+        (hideout.event.item.tier, hideout.event.quality),
+        (None, None)
+    );
+    let unknown = Filter {
+        quality: Some(0),
+        ..Filter::default()
+    };
+    assert_eq!(store.rows(&session.id, &unknown).unwrap().len(), 1);
+    let tier5 = Filter {
+        tier: Some(5),
+        enchantment: Some(1),
+        ..Filter::default()
+    };
+    assert_eq!(store.rows(&session.id, &tier5).unwrap()[0].event.id, "b");
+
+    let mut mismatch = v2_event(&session.id, "c", "T5_BAG@1", Some(1));
+    mismatch["item"]["tier"] = json!(6);
+    assert!(store
+        .import(&session.id, &import_file(2, json!([mismatch])))
+        .is_err());
+    let mut bad_quality = v2_event(&session.id, "d", "T5_BAG", Some(1));
+    bad_quality["quality"] = json!(6);
+    assert!(store
+        .import(&session.id, &import_file(2, json!([bad_quality])))
+        .is_err());
+    assert_eq!(
+        store.rows(&session.id, &Filter::default()).unwrap().len(),
+        2
+    );
+}
+
+#[test]
+fn voided_loot_leaves_totals_but_still_deduplicates() {
+    let mut store = Store::open(":memory:").unwrap();
+    let session = store.create_session("Void").unwrap();
+    let event = adapters::simulated(&session.id).remove(0);
+    store.ingest(std::slice::from_ref(&event), false).unwrap();
+    store
+        .manual(&session.id, "Bob", "T4_BAG", Some(1), 1)
+        .unwrap();
+    store
+        .set_voided(&session.id, &event.source, &event.id, true)
+        .unwrap();
+    assert!(store
+        .set_voided(&session.id, &event.source, &event.id, true)
+        .is_err());
+    let view = store.view(&session.id, &Filter::default()).unwrap();
+    assert_eq!(view.rows.len(), 2);
+    assert_eq!(view.full_totals.session.events, 1);
+    assert!(!view.full_totals.players.contains_key(&event.player));
+    assert_eq!(
+        store
+            .ingest(std::slice::from_ref(&event), true)
+            .unwrap()
+            .duplicates,
+        1
+    );
+    store
+        .set_voided(&session.id, &event.source, &event.id, false)
+        .unwrap();
+    let view = store.view(&session.id, &Filter::default()).unwrap();
+    assert_eq!(view.full_totals.session.events, 2);
+}
+
+#[test]
+fn ledger_mistakes_are_corrected_by_reversal_not_edits() {
+    let mut store = Store::open(":memory:").unwrap();
+    let session = store.create_session("Ledger").unwrap();
+    let wrong = store
+        .add_ledger(&session.id, LedgerKind::Income, "Alice", "Typo", 10_000)
+        .unwrap();
+    store
+        .add_ledger(&session.id, LedgerKind::Income, "Alice", "Venda", 1_000)
+        .unwrap();
+    let reversal = store.reverse_ledger(&session.id, &wrong.id).unwrap();
+    assert!(store.reverse_ledger(&session.id, &wrong.id).is_err());
+    assert!(store.reverse_ledger(&session.id, &reversal.id).is_err());
+    let view = store.view(&session.id, &Filter::default()).unwrap();
+    assert_eq!(view.ledger.len(), 3);
+    assert_eq!(view.finance.income, 1_000);
+    assert_eq!(view.finance.available, 1_000);
+    assert!(store
+        .record_split(&session.id, 1_001, &["Alice".into()])
+        .is_err());
+    store
+        .record_split(&session.id, 1_000, &["Alice".into()])
+        .unwrap();
+}
+
+#[test]
+fn split_rejects_names_that_differ_only_by_case_or_spaces() {
+    assert!(split(10, &["Alice".into(), "alice".into()]).is_err());
+    assert!(split(10, &["Alice".into(), " Alice ".into()]).is_err());
+    let shares = split(10, &[" Bob ".into(), "Alice".into(), "Carl".into()]).unwrap();
+    let names: Vec<_> = shares.iter().map(|share| share.player.as_str()).collect();
+    assert_eq!(names, ["Alice", "Bob", "Carl"]);
+    assert_eq!(shares.iter().map(|share| share.silver).sum::<i64>(), 10);
+}
+
+#[test]
+fn imported_catalog_replaces_demo_items_for_manual_loot() {
+    let dump = json!([
+        { "Index": "1", "UniqueName": "UNIQUE_HIDEOUT", "LocalizedNames": { "EN-US": "Hideout Kit", "PT-BR": "Kit de Esconderijo" } },
+        { "Index": "2", "UniqueName": "T4_BAG", "LocalizedNames": { "EN-US": "Adept's Bag" } },
+        { "Index": "3", "UniqueName": "T4_BAG@1", "LocalizedNames": null },
+        { "Index": "4", "UniqueName": "bad name", "LocalizedNames": null }
+    ])
+    .to_string();
+    let parsed = catalog::parse_ao_bin_dumps(dump.as_bytes()).unwrap();
+    assert_eq!((parsed.entries.len(), parsed.skipped), (3, 1));
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("test.db");
+    let mut store = Store::open(&path).unwrap();
+    let session = store.create_session("Catalog").unwrap();
+    assert_eq!(store.catalog_info().unwrap().kind, "builtin");
+    store
+        .manual(&session.id, "Alice", "T6_ORE", None, 1)
+        .unwrap();
+    let info = store.replace_catalog(&parsed, "items.json").unwrap();
+    assert_eq!((info.item_count, info.skipped_count), (3, 1));
+    assert!(store
+        .manual(&session.id, "Alice", "T6_ORE", None, 1)
+        .is_err());
+    store
+        .manual(&session.id, "Alice", "UNIQUE_HIDEOUT", None, 1)
+        .unwrap();
+    let found = store.search_catalog("esconderijo", 10).unwrap();
+    assert_eq!(found[0].id, "UNIQUE_HIDEOUT");
+    assert_eq!(
+        store.search_catalog("t4_bag@1", 10).unwrap()[0].name,
+        "T4_BAG@1"
+    );
+    drop(store);
+    let store = Store::open(path).unwrap();
+    assert_eq!(store.catalog_info().unwrap().label, "items.json");
+    let names: Vec<_> = store
+        .rows(&session.id, &Filter::default())
+        .unwrap()
+        .into_iter()
+        .map(|row| row.event.item.name)
+        .collect();
+    assert!(names.contains(&"Minério de Runita".to_string()));
+
+    let duplicate = json!([
+        { "Index": "1", "UniqueName": "T4_BAG", "LocalizedNames": null },
+        { "Index": "2", "UniqueName": "T4_BAG", "LocalizedNames": null }
+    ])
+    .to_string();
+    assert!(catalog::parse_ao_bin_dumps(duplicate.as_bytes()).is_err());
+}
+
+#[test]
+fn version_one_database_is_migrated_with_backup_and_old_exports_still_replay() {
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("kalbion.db");
+    let old_event = json!({
+        "id": "old-1", "origin": "simulated", "source": "kalbion.simulator.v1",
+        "session_id": "s1", "occurred_at": "2026-10-01T04:22:32.137513+00:00",
+        "player": "Kazz",
+        "item": { "id": "T5_BAG@1", "name": "Bolsa do Especialista", "tier": 5, "enchantment": 1, "quality": 2 },
+        "quantity": 1
+    });
+    {
+        let connection = rusqlite::Connection::open(&path).unwrap();
+        connection
+            .execute_batch(include_str!("../migrations/001_initial.sql"))
+            .unwrap();
+        connection
+            .execute(
+                "INSERT INTO sessions VALUES ('s1', 'Antiga', '2026-10-01T04:00:00+00:00', NULL, 'europe', 'Lymhurst')",
+                [],
+            )
+            .unwrap();
+        connection
+            .execute(
+                "INSERT INTO events VALUES ('kalbion.simulator.v1', 'old-1', 's1', ?1, 0)",
+                [old_event.to_string()],
+            )
+            .unwrap();
+        connection.execute(
+            "INSERT INTO prices VALUES ('s1', 'T5_BAG@1', 2, ?1)",
+            [json!({ "unit_silver": 500, "source": "manual", "server": "europe", "city": "Lymhurst", "queried_at": "2026-10-01T05:00:00+00:00" }).to_string()],
+        ).unwrap();
+        connection.execute(
+            "INSERT INTO ledger VALUES ('l1', 's1', ?1)",
+            [json!({ "id": "l1", "session_id": "s1", "kind": "income", "player": "Kazz", "description": "Venda", "amount": 700, "occurred_at": "2026-10-01T06:00:00+00:00" }).to_string()],
+        ).unwrap();
+        connection
+            .execute(
+                "INSERT INTO settings VALUES (1, ?1)",
+                [json!({ "server": "europe", "city": "Lymhurst" }).to_string()],
+            )
+            .unwrap();
+    }
+    let mut store = Store::open(&path).unwrap();
+    let backups = std::fs::read_dir(directory.path())
+        .unwrap()
+        .filter_map(|entry| entry.ok())
+        .filter(|entry| {
+            entry
+                .file_name()
+                .to_string_lossy()
+                .starts_with("kalbion-v1-backup-")
+        })
+        .count();
+    assert_eq!(backups, 1);
+    assert_eq!(store.settings().unwrap().city, "Lymhurst");
+    let view = store.view("s1", &Filter::default()).unwrap();
+    assert_eq!(
+        view.rows[0].event.occurred_at,
+        "2026-10-01T04:22:32.137513Z"
+    );
+    assert_eq!(view.rows[0].event.quality, Some(2));
+    assert_eq!(view.totals.session.estimated_silver, 500);
+    assert_eq!(view.finance.income, 700);
+    let result = store
+        .import("s1", &import_file(1, json!([old_event])))
+        .unwrap();
+    assert_eq!(result.duplicates, 1);
+    drop(store);
+    assert!(Store::open(&path).is_ok());
 }

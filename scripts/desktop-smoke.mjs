@@ -25,11 +25,12 @@ async function until(check) {
   throw new Error('Timed out waiting for UI');
 }
 async function click(label) {
-  const found = await execute(
-    `const button = [...document.querySelectorAll('button')].find(button => button.textContent.trim() === arguments[0]); if (!button || button.disabled) return false; button.click(); return true;`,
-    [label],
+  await until(() =>
+    execute(
+      `const button = [...document.querySelectorAll('button')].find(button => button.textContent.trim() === arguments[0]); if (!button || button.disabled) return false; button.click(); return true;`,
+      [label],
+    ),
   );
-  assert.ok(found, `Enabled button: ${label}`);
 }
 async function input(selector, value) {
   const element = await call('POST', `/session/${session}/element`, {
@@ -41,13 +42,20 @@ async function input(selector, value) {
   await call('POST', `/session/${session}/element/${elementId}/value`, {
     text: value,
   });
+  // WebKit can return before queued keyboard events reach the input.
+  await until(
+    async () =>
+      (await execute(`return document.querySelector(arguments[0]).value`, [
+        selector,
+      ])) === value,
+  );
 }
 async function start() {
   const result = await call('POST', '/session', {
     capabilities: {
       alwaysMatch: {
         'tauri:options': {
-          application: path.resolve('src-tauri/target/debug/kalbion'),
+          application: path.resolve('target/debug/kalbion'),
         },
       },
     },
@@ -133,7 +141,7 @@ try {
     operation: 'import',
     session_id: sessionId,
     json: JSON.stringify({
-      schema_version: 1,
+      schema_version: 2,
       events: view.rows.map((row) => row.event),
     }),
   });
@@ -180,7 +188,7 @@ try {
   await input(
     'textarea',
     JSON.stringify({
-      schema_version: 1,
+      schema_version: 2,
       events: view.rows.map((row) => row.event),
     }),
   );
@@ -198,6 +206,20 @@ try {
       `return !document.querySelector('[role="dialog"]') && document.querySelectorAll('tbody tr').length === 8`,
     ),
   );
+  await click('Anular');
+  await click('Anular registro');
+  await until(() =>
+    execute(
+      `return !document.querySelector('[role="dialog"]') && document.body.textContent.includes('Anulado')`,
+    ),
+  );
+  const afterVoid = await ipc({
+    operation: 'view',
+    session_id: sessionId,
+    filter: {},
+  });
+  assert.equal(afterVoid.rows.length, 8);
+  assert.equal(afterVoid.full_totals.session.events, 7);
   await click('Encerrar sessão');
   await until(() =>
     execute(
@@ -233,6 +255,7 @@ try {
     filter: {},
   });
   assert.equal(recovered.rows.length, 8);
+  assert.equal(recovered.full_totals.session.events, 7);
   assert.equal(recovered.finance.settlements, 1001);
   assert.equal(
     recovered.rows.filter((row) => row.price).length,
@@ -243,7 +266,7 @@ try {
     'Martlock',
   );
   console.log(
-    'PASS: desktop UI, real IPC, simulation, manual loot, import validation/replay, prices, player totals, ledger, split, filters, empty/error states, session close/reopen, settings, disabled licensing, persistence after process restart. Screenshot: /tmp/kalbion-desktop.png',
+    'PASS: desktop UI, real IPC, simulation, manual loot, catalog search, void, import validation/replay, prices, player totals, ledger, split, filters, empty/error states, session close/reopen, settings, disabled licensing, persistence after process restart. Screenshot: /tmp/kalbion-desktop.png',
   );
 } finally {
   if (session) await call('DELETE', `/session/${session}`);

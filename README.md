@@ -1,105 +1,120 @@
 # Kalbion
 
-Companion desktop local para Albion Online: Tauri 2 + Rust + React/TypeScript + Vite + Tailwind + SQLite. Interface em português, tema escuro, sem Flask, servidor de aplicação ou navegador externo. A versão de desenvolvimento usa somente dados simulados, manuais ou importados.
+Companion desktop local para Albion Online: Tauri 2 + Rust + React/TypeScript + Vite + Tailwind + SQLite. Interface em português, tema escuro, sem servidor de aplicação nem navegador externo. A versão de desenvolvimento usa somente dados simulados, manuais ou importados; não há captura do jogo.
 
 ## Executar
 
-Pré-requisitos: Node.js 22+, npm, toolchain Rust atual com Cargo e dependências nativas do [Tauri 2](https://v2.tauri.app/start/prerequisites/). O app roda como usuário normal.
+Pré-requisitos: Node.js 22+, npm, Rust estável e as dependências nativas do [Tauri 2](https://v2.tauri.app/start/prerequisites/). O app roda como usuário normal.
 
 ```bash
 npm ci
 npm run tauri dev
 ```
 
-`npm run dev` inicia apenas o Vite para desenvolvimento do frontend. Abrir sua URL no navegador mostra explicitamente que o core Rust não está conectado; não existe backend falso ou persistência em localStorage.
+`npm run dev` inicia apenas o Vite; no navegador a interface avisa que o core Rust não está conectado.
 
 ### Linux
 
-No Fedora, instalar os pré-requisitos de compilação (essa instalação pode exigir administrador; executar Kalbion não exige):
+Fedora (instalar exige administrador; executar o Kalbion não):
 
 ```bash
 sudo dnf install gcc gcc-c++ make openssl-devel webkit2gtk4.1-devel libappindicator-gtk3-devel librsvg2-devel patchelf
-```
-
-Instalar Rust pelo método de sua distribuição ou rustup e confirmar `cargo --version`. Para Ubuntu/Debian, seguir os nomes de pacotes da documentação Tauri. Não instalar drivers de captura para esta entrega.
-
-```bash
-npm run tauri build -- --no-bundle
-# Executável: src-tauri/target/release/kalbion
+npm run tauri build -- --no-bundle            # executável: target/release/kalbion
 npm run tauri build -- --bundles deb,rpm,appimage
 ```
 
-Em ambientes com erro de protocolo do Wayland, testar explicitamente X11:
-
-```bash
-GDK_BACKEND=x11 npm run tauri dev
-```
+Em Linux o app define `WEBKIT_DISABLE_DMABUF_RENDERER=1` quando a variável não existe, porque o renderizador DMA-BUF do WebKitGTK aborta em alguns ambientes Wayland com NVIDIA (`Error 71 (Protocol error)`). Para reativá-lo, exporte a variável com `0`.
 
 ### Windows
 
-Instalar Node.js 22+, Rust com toolchain MSVC, Visual Studio Build Tools com **Desktop development with C++** e Windows SDK, além de WebView2 Runtime. Executar no PowerShell comum:
+Node.js 22+, Rust com toolchain MSVC, Visual Studio Build Tools (**Desktop development with C++** e Windows SDK) e WebView2 Runtime. No PowerShell comum:
 
 ```powershell
 npm ci
 npm run tauri dev
-npm run tauri build -- --bundles nsis
+npm run tauri build -- --bundles nsis   # instalador em target\release\bundle\nsis
 ```
 
-O instalador é gerado em `src-tauri/target/release/bundle/nsis`. Windows e instaladores não foram executados nesta entrega; exigem validação em máquina Windows antes de distribuição. Não há assinatura de código configurada.
+Windows e instaladores **ainda não foram validados**; não há assinatura de código.
 
-## Fluxo inicial
+## Catálogo de itens
 
-1. Em Configurações, selecionar servidor e cidade. Essa preferência vale para novas sessões.
-2. Criar sessão; usar **Gerar simulação** para sete eventos identificados como simulados, ou **Loot manual**.
-3. Definir preços unitários; tier, enchantment e quality são separados. Preço ausente aparece como “Definir preço”, nunca zero implícito.
-4. Filtrar por jogador/item/tier/enchantment/quality. Conferir os totais filtrados no rodapé e totais integrais nos cards.
-5. Em **Acertos da sessão**, registrar receita efetivamente recebida, despesas e regear. Calcular divisão, revisar e confirmar pagamentos. Estimativa de loot não aumenta saldo.
-6. Exportar JSON/CSV pelo seletor nativo. Exportação inclui toda a sessão e ledger, independentemente dos filtros.
-7. Encerrar/reabrir sessões e reiniciar o aplicativo: histórico, preços, configurações e acertos são recuperados.
+O Kalbion não distribui dados do jogo. Sem importação, existe só um catálogo demonstrativo de sete itens. Para o catálogo completo, baixe `formatted/items.json` de [ao-data/ao-bin-dumps](https://github.com/ao-data/ao-bin-dumps) e use **Configurações → Importar items.json**. O arquivo é escolhido pelo diálogo nativo; a importação é atômica, guarda nome do arquivo, data e contagem, e substitui o catálogo anterior. Loot já registrado mantém o nome com que foi salvo.
 
-Catálogo demonstrativo com sete variantes, tiers 4–8, enchantments 0–4 e qualities 1–5. Não é um catálogo completo nem download de assets oficiais. Importação v1 está documentada em [arquitetura](docs/architecture.md); arquivos do aplicativo Python antigo não são automaticamente compatíveis.
+Os dados desses dumps derivam de arquivos do jogo, de propriedade da Sandbox Interactive. Avaliar os termos antes de redistribuir qualquer parte deles.
 
-## Dados locais
+## Modelo de dados
 
-Banco `kalbion.db` no diretório `app_data_dir` do Tauri:
+- **Item:** identificado pelo `UniqueName` do Albion (`T5_BAG@1`). Tier e enchantment são derivados do ID; itens como `UNIQUE_HIDEOUT` não têm tier.
+- **Quality:** pertence ao loot, não ao item. `null` significa “não informada pela fonte” e nunca é preenchida por suposição. Preços de quality desconhecida são separados das conhecidas.
+- **Origem:** `simulated`, `manual` ou `observed`. Importados recebem a marca `imported`; `observed` importado é declaração do arquivo, não autenticidade verificada.
+- **Deduplicação:** identidade única `(source, id)`. Replay idêntico é ignorado; mesma identidade com conteúdo diferente rejeita o lote inteiro; loots iguais com IDs diferentes são mantidos. Conteúdo e janelas de tempo nunca são usados para adivinhar identidade. Horários são normalizados para UTC antes da comparação.
+- **Correções:** loot é **anulado** (continua no histórico, na exportação e na deduplicação, mas sai dos totais; pode ser restaurado). O ledger só recebe acréscimos: erros são corrigidos por **estorno**, que fica visível ao lado do original.
+- **Valores:** silver inteiro (`i64`), até 10¹² por lançamento; totais limitados à faixa exata de inteiros do JavaScript. Preço ausente nunca vira zero. Estimativa de loot nunca vira receita.
 
-- Linux: normalmente `$XDG_DATA_HOME/io.kalbion.desktop/kalbion.db` ou `~/.local/share/io.kalbion.desktop/kalbion.db`.
-- Windows: `%APPDATA%\io.kalbion.desktop\kalbion.db`.
+### Importação JSON
 
-Para backup, fechar o aplicativo e copiar o diretório completo. JSON/CSV são exports para consulta; o importador restaura apenas eventos na mesma sessão, não o banco completo. Erros de inicialização aparecem em diálogo. Logs JSON são emitidos em stderr; não incluem chaves, tokens ou payloads importados.
+```json
+{
+  "schema_version": 2,
+  "events": [{
+    "id": "source-event-0001",
+    "source": "example.import.v1",
+    "origin": "manual",
+    "session_id": "ID-DA-SESSAO",
+    "occurred_at": "2026-10-01T12:00:00Z",
+    "player": "Kazz",
+    "item": { "id": "T5_BAG@1", "name": "Bolsa do Especialista" },
+    "quality": 2,
+    "quantity": 2
+  }]
+}
+```
+
+`quality` pode ser `null`; `item.tier` e `item.enchantment` são opcionais e, se presentes, precisam concordar com o ID. A versão 1 (exports do primeiro build, com `quality` dentro de `item`) continua aceita. Limites: 5 MB, 10.000 eventos, sessão existente e aberta, `session_id` igual ao da sessão de destino (sem remapeamento). O arquivo de importação é um contrato próprio (`crates/kalbion-core/src/import.rs`), separado das structs de domínio. O export JSON usa o mesmo contrato em `events` e pode ser reimportado na mesma sessão; preços, anulações e ledger não são restaurados por essa via.
+
+## Dados locais e logs
+
+- Banco: `~/.local/share/io.kalbion.desktop/kalbion.db` (Linux) ou `%APPDATA%\io.kalbion.desktop\kalbion.db` (Windows).
+- Log JSON: subpasta `logs/kalbion.log` do mesmo diretório no Linux; no Windows, o caminho aparece em **Configurações**. Rotação simples em 5 MB. Sem senhas, chaves, tokens ou payloads importados.
+- Migrations rodam ao abrir o banco, uma transação por versão. Antes de atualizar um banco existente, uma cópia consistente é gravada ao lado (`kalbion-v1-backup-<data>.db`). Bancos de versões futuras são recusados.
+- Backup manual: fechar o app e copiar o diretório inteiro, incluindo arquivos `-wal`/`-shm` se existirem.
+
+## Licenciamento (KeyAuth)
+
+`LicenseProvider` fica fora do domínio. O adaptador `KeyAuth` retorna apenas `disabled` e recusa autenticação: nenhuma chamada é feita e não há sucesso simulado. Para ativar: nome da aplicação, owner ID e versão no painel KeyAuth, método de licença escolhido e política de expiração/indisponibilidade; validar o contrato atual da [Client API](https://keyauthdocs.apidog.io/getting-started/introduction), incluindo verificação de assinatura das respostas. Nunca embutir Seller API ou segredo administrativo. Tokens ficam em memória ou no armazenamento seguro do sistema, nunca em localStorage, exports ou logs.
+
+Política: sem validação offline inventada; indisponibilidade é estado distinto de licença inválida; expiração nunca apaga histórico nem bloqueia exportação.
+
+## Referências e limites
+
+- [Loot-Logger-Albion-Online](https://github.com/Kazxye/Loot-Logger-Albion-Online) (projeto anterior) e [AlbionOnline-StatisticsAnalysis](https://github.com/Triky313/AlbionOnline-StatisticsAnalysis) são referências de fatos do protocolo e regras do jogo. O segundo é **GPL-3.0**: não copiar nem traduzir código dele para o Kalbion fechado.
+- Os [termos da SBI](https://albiononline.com/terms_and_conditions) restringem software de terceiros e interceptação de dados. Não há autorização obtida para captura, OCR ou monetização. Captura, quando existir, será um helper isolado com privilégios mínimos; o domínio não conhece Photon.
+- Antes de redistribuir Npcap, consultar a [licença OEM](https://npcap.com/oem/).
 
 ## Verificações
 
 ```bash
-npm run typecheck
-npm run build
-npm run test:core
-cargo clippy --manifest-path crates/kalbion-core/Cargo.toml --all-targets -- -D warnings
-cargo fmt --manifest-path crates/kalbion-core/Cargo.toml -- --check
-cargo fmt --manifest-path src-tauri/Cargo.toml -- --check
-npm exec prettier -- --check src scripts
+npm run build                                       # typecheck + Vite
+cargo test --workspace
+cargo clippy --workspace --all-targets -- -D warnings
+cargo fmt --all -- --check
+npx prettier --check src scripts
 ```
 
-Teste desktop Linux reproduzível (WebKitWebDriver instalado):
+Teste desktop (Linux, WebKitWebDriver instalado), sempre com diretório de dados isolado:
 
 ```bash
 cargo install tauri-driver --locked
 npm run tauri build -- --debug --no-bundle
-# Terminal separado; diretório exclusivo de teste:
-GDK_BACKEND=x11 XDG_DATA_HOME=/tmp/kalbion-test tauri-driver --port 4446 --native-port 4447
-# Na raiz, outro terminal:
+XDG_DATA_HOME=/tmp/kalbion-test tauri-driver --port 4446 --native-port 4447   # outro terminal
 node scripts/desktop-smoke.mjs
 ```
 
-O teste cria uma sessão real no banco do processo de teste, testa a interface e o IPC, reinicia o processo e verifica recuperação. Use sempre o diretório isolado indicado. `KALBION_WEBDRIVER_URL` permite outro endereço. Screenshot em `/tmp/kalbion-desktop.png`.
+O teste usa a interface e o IPC reais: sessão, simulação, preço, totais por jogador, ledger, divisão, filtros, importação inválida e replay, loot manual pelo catálogo, anulação, encerramento, configurações e persistência após reiniciar o processo. O diálogo nativo de arquivos (export e importação de catálogo) não é automatizado.
 
-Validado neste ambiente: Fedora/Linux com GTK 3.24 e WebKitGTK 2.54; frontend build/typecheck; seis testes Rust; Clippy com warnings negados no core e no shell Tauri; rustfmt e Prettier; build nativo debug e release sem bundle; fluxo desktop real via WebDriver/X11, incluindo reinício. Executável de produção: `src-tauri/target/release/kalbion`. Wayland apresentou erro de protocolo no ambiente de teste; não validado. Diálogo nativo de salvar arquivo não foi automatizado; conteúdo JSON/CSV foi testado no core.
+## Estado
 
-## Entrega e próximos passos
-
-- Implementados: sessões, loot, fontes explícitas, importação validada, deduplicação persistente, filtros/totais, preços manuais contextualizados, ledger/acertos/divisão, configurações e exports.
-- Futuro: crafting, financeiro consolidado e composições são páginas explicitamente não implementadas. Acertos financeiros por sessão já funcionam.
-- ADP: contrato e adaptador desabilitado; consulta HTTP/cache ainda pendentes. Próxima etapa concreta: implementar preços com hosts fixos, timeout, cache e testes de indisponibilidade.
-- KeyAuth: contrato e estados explícitos, autenticação real desabilitada. Dados necessários e política offline em [arquitetura](docs/architecture.md#licenciamento).
-- Captura, OCR, alertas táticos, memória e automação estão ausentes. Não foi obtida autorização SBI para integração com o jogo ou monetização. Análise do projeto de referência e fontes em [reference-analysis.md](docs/reference-analysis.md).
-- Limites: sessões carregadas em memória, sem paginação, sem edição/reversão de lançamentos e sem restauração completa via JSON. Use uma instância do app por vez. Nenhum release, push ou publicação foi realizado.
+- Implementado: sessões, loot com fontes explícitas, importação v1/v2, deduplicação persistente, filtros e totais, preços manuais por item e quality, anulação de loot, ledger com estorno, divisão, catálogo importável, exportação JSON/CSV, configurações, log em arquivo.
+- Não implementado (páginas marcadas na interface): crafting, financeiro consolidado, composições.
+- Pendente: preços do Albion Data Project (contrato `MarketPrices` existe, adaptador recusa), KeyAuth real, validação no Windows, paginação de sessões muito grandes.

@@ -1,15 +1,7 @@
-import {
-  useCallback,
-  useEffect,
-  useRef,
-  useState,
-  type FormEvent,
-  type ReactNode,
-} from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import {
   Archive,
   ArrowDownToLine,
-  ArrowUpRight,
   Boxes,
   Check,
   ChevronRight,
@@ -25,14 +17,24 @@ import {
   Users,
   X,
 } from 'lucide-react';
-import { desktop, exportSession, request } from './api';
+import { desktop, exportSession, importCatalog, request } from './api';
+import {
+  ConfirmDialog,
+  Dialog,
+  Field,
+  Stat,
+  type Confirmation,
+} from './components';
+import { LedgerForm, LedgerPanel, SplitForm } from './finance';
+import { ImportForm, LootTable, ManualForm } from './loot';
+import { date, qualities, qualityLabel, serverNames, silver } from './format';
+import { SettingsPage } from './settings';
 import type {
   Bootstrap,
   Filter,
-  Item,
+  InsertResult,
   LootRow,
   Session,
-  Settings,
   Share,
   View,
 } from './types';
@@ -44,118 +46,34 @@ const emptyFilter: Filter = {
   enchantment: null,
   quality: null,
 };
-const qualities = ['Normal', 'Bom', 'Excepcional', 'Excelente', 'Obra-prima'];
-const serverNames: Record<string, string> = {
-  americas: 'Américas',
-  europe: 'Europa',
-  asia: 'Ásia',
-};
-const kinds: Record<string, string> = {
-  income: 'Receita recebida',
-  expense: 'Despesa',
-  regear: 'Regear',
-  settlement: 'Acerto pago',
-};
-const silver = (amount: number) =>
-  new Intl.NumberFormat('pt-BR').format(amount);
-const date = (value: string) =>
-  new Date(value).toLocaleString('pt-BR', {
-    dateStyle: 'short',
-    timeStyle: 'short',
-  });
 type Page = 'loot' | 'crafting' | 'finance' | 'compositions' | 'settings';
 type Modal = 'session' | 'manual' | 'import' | 'ledger' | 'split' | null;
-
-function Field({ label, children }: { label: string; children: ReactNode }) {
-  return (
-    <label className="field">
-      <span>{label}</span>
-      {children}
-    </label>
-  );
-}
-function Stat({
-  label,
-  value,
-  hint,
-  accent = false,
-}: {
-  label: string;
-  value: string;
-  hint: string;
-  accent?: boolean;
-}) {
-  return (
-    <div className={`stat ${accent ? 'accent' : ''}`}>
-      <span>{label}</span>
-      <strong>{value}</strong>
-      <small>{hint}</small>
-    </div>
-  );
-}
-function Dialog({
-  title,
-  close,
-  children,
-}: {
-  title: string;
-  close: () => void;
-  children: ReactNode;
-}) {
-  const container = useRef<HTMLElement>(null);
-  useEffect(() => {
-    const previous = document.activeElement as HTMLElement | null;
-    const panel = container.current;
-    if (!panel) return;
-    if (!panel.contains(document.activeElement)) {
-      panel
-        .querySelector<HTMLElement>('input, select, textarea, button')
-        ?.focus();
-    }
-    const trap = (event: KeyboardEvent) => {
-      if (event.key !== 'Tab') return;
-      const elements = Array.from(
-        panel.querySelectorAll<HTMLElement>(
-          'button:not(:disabled), input:not(:disabled), select:not(:disabled), textarea:not(:disabled)',
-        ),
-      );
-      const first = elements[0];
-      const last = elements[elements.length - 1];
-      if (event.shiftKey && document.activeElement === first) {
-        event.preventDefault();
-        last?.focus();
-      } else if (!event.shiftKey && document.activeElement === last) {
-        event.preventDefault();
-        first?.focus();
-      }
-    };
-    panel.addEventListener('keydown', trap);
-    return () => {
-      panel.removeEventListener('keydown', trap);
-      previous?.focus();
-    };
-  }, []);
-  return (
-    <div className="overlay" onClick={close}>
-      <section
-        ref={container}
-        role="dialog"
-        aria-modal="true"
-        aria-label={title}
-        className="dialog"
-        onClick={(event) => event.stopPropagation()}
-      >
-        <header>
-          <h2>{title}</h2>
-          <button aria-label="Fechar" onClick={close}>
-            <X size={18} />
-          </button>
-        </header>
-        {children}
-      </section>
-    </div>
-  );
-}
+const nav = [
+  { id: 'loot', label: 'Loot e sessões', icon: Boxes },
+  { id: 'crafting', label: 'Crafting', icon: Hammer },
+  { id: 'finance', label: 'Financeiro', icon: CircleDollarSign },
+  { id: 'compositions', label: 'Composições', icon: Users },
+] as const;
+const filterSelects = [
+  {
+    key: 'tier',
+    label: 'Todos os tiers',
+    options: [1, 2, 3, 4, 5, 6, 7, 8].map((value) => [value, `T${value}`]),
+  },
+  {
+    key: 'enchantment',
+    label: 'Encantamento',
+    options: [0, 1, 2, 3, 4].map((value) => [value, `.${value}`]),
+  },
+  {
+    key: 'quality',
+    label: 'Qualidade',
+    options: [
+      ...qualities.map((label, index) => [index + 1, label]),
+      [0, 'Desconhecida'],
+    ],
+  },
+] as const;
 
 export default function App() {
   const [boot, setBoot] = useState<Bootstrap | null>(null);
@@ -166,6 +84,7 @@ export default function App() {
   const [tab, setTab] = useState<'events' | 'players' | 'ledger'>('events');
   const [modal, setModal] = useState<Modal>(null);
   const [pricing, setPricing] = useState<LootRow | null>(null);
+  const [confirmation, setConfirmation] = useState<Confirmation | null>(null);
   const [busy, setBusy] = useState(false);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
@@ -208,16 +127,18 @@ export default function App() {
       sequence.current++;
     };
   }, [active, filter, revision]);
+  const closeDialogs = useCallback(() => {
+    setModal(null);
+    setPricing(null);
+    setConfirmation(null);
+  }, []);
   useEffect(() => {
     const onKey = (event: KeyboardEvent) => {
-      if (event.key === 'Escape' && !busy) {
-        setModal(null);
-        setPricing(null);
-      }
+      if (event.key === 'Escape' && !busy) closeDialogs();
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, [busy]);
+  }, [busy, closeDialogs]);
   async function act(
     action: () => Promise<unknown>,
     message = 'Alterações salvas.',
@@ -229,8 +150,7 @@ export default function App() {
     setNotice('');
     try {
       const result = await action();
-      setModal(null);
-      setPricing(null);
+      closeDialogs();
       setNotice(typeof result === 'string' ? result : message);
       await refresh();
     } catch (reason) {
@@ -243,30 +163,40 @@ export default function App() {
   const session = boot?.sessions.find((item) => item.id === active);
   const currentView = view?.session.id === active ? view : null;
   const args = { session_id: active };
-  const nav = [
-    { id: 'loot', label: 'Loot e sessões', icon: Boxes },
-    { id: 'crafting', label: 'Crafting', icon: Hammer },
-    { id: 'finance', label: 'Financeiro', icon: CircleDollarSign },
-    { id: 'compositions', label: 'Composições', icon: Users },
-  ] as const;
+  const closed = !!session?.closed_at;
   async function exportData(format: string) {
-    if (mutation.current) return;
-    mutation.current = true;
-    setBusy(true);
-    setError('');
-    try {
+    await act(async () => {
       const saved = await exportSession(active, format);
-      setNotice(
-        saved
-          ? `Sessão completa exportada em ${format.toUpperCase()}.`
-          : 'Exportação cancelada.',
-      );
-    } catch (reason) {
-      setError(String(reason));
-    } finally {
-      mutation.current = false;
-      setBusy(false);
-    }
+      return saved
+        ? `Sessão completa exportada em ${format.toUpperCase()}.`
+        : 'Exportação cancelada.';
+    });
+  }
+  function toggleVoid(row: LootRow) {
+    const voided = !row.voided_at;
+    const target = {
+      ...args,
+      source: row.event.source,
+      event_id: row.event.id,
+      voided,
+    };
+    setConfirmation(
+      voided
+        ? {
+            title: 'Anular loot',
+            message: `${row.event.player} · ${row.event.item.name} × ${silver(row.event.quantity)}. O registro continua no histórico e na exportação, mas sai dos totais. Pode ser restaurado depois.`,
+            confirmLabel: 'Anular registro',
+            action: () => request('set_voided', target),
+            notice: 'Loot anulado; totais atualizados.',
+          }
+        : {
+            title: 'Restaurar loot',
+            message: `${row.event.player} · ${row.event.item.name} × ${silver(row.event.quantity)} volta a contar nos totais.`,
+            confirmLabel: 'Restaurar registro',
+            action: () => request('set_voided', target),
+            notice: 'Loot restaurado.',
+          },
+    );
   }
   return (
     <div className="app-shell">
@@ -334,7 +264,7 @@ export default function App() {
           </span>
         </header>
         <div className="content">
-          {error && (
+          {error && !modal && !pricing && !confirmation && (
             <div role="alert" className="banner error">
               <span>{error}</span>
               <button
@@ -416,10 +346,8 @@ export default function App() {
                 </div>
                 {session && (
                   <>
-                    <span
-                      className={`pill ${session.closed_at ? '' : 'green'}`}
-                    >
-                      {session.closed_at ? 'Encerrada' : 'Aberta'}
+                    <span className={`pill ${closed ? '' : 'green'}`}>
+                      {closed ? 'Encerrada' : 'Aberta'}
                     </span>
                     <span className="session-meta">
                       {serverNames[session.server]}
@@ -432,17 +360,12 @@ export default function App() {
                       onClick={() =>
                         void act(
                           () =>
-                            request('set_closed', {
-                              ...args,
-                              closed: !session.closed_at,
-                            }),
-                          session.closed_at
-                            ? 'Sessão reaberta.'
-                            : 'Sessão encerrada.',
+                            request('set_closed', { ...args, closed: !closed }),
+                          closed ? 'Sessão reaberta.' : 'Sessão encerrada.',
                         )
                       }
                     >
-                      {session.closed_at ? 'Reabrir sessão' : 'Encerrar sessão'}
+                      {closed ? 'Reabrir sessão' : 'Encerrar sessão'}
                     </button>
                   </>
                 )}
@@ -483,7 +406,7 @@ export default function App() {
                       <Stat
                         label="Itens registrados"
                         value={silver(currentView.full_totals.session.quantity)}
-                        hint={`${currentView.full_totals.session.events} eventos na sessão`}
+                        hint={`${currentView.full_totals.session.events} eventos válidos na sessão`}
                       />
                       <Stat
                         label="Participantes"
@@ -548,6 +471,7 @@ export default function App() {
                               <input
                                 aria-label="Buscar item"
                                 placeholder="Buscar item ou ID…"
+                                maxLength={150}
                                 value={filter.item}
                                 onChange={(event) =>
                                   setFilter({
@@ -560,6 +484,7 @@ export default function App() {
                             <input
                               aria-label="Filtrar jogador"
                               placeholder="Todos os jogadores"
+                              maxLength={64}
                               value={filter.player}
                               onChange={(event) =>
                                 setFilter({
@@ -568,46 +493,29 @@ export default function App() {
                                 })
                               }
                             />
-                            {(['tier', 'enchantment', 'quality'] as const).map(
-                              (key) => (
-                                <select
-                                  aria-label={key}
-                                  key={key}
-                                  value={filter[key] ?? ''}
-                                  onChange={(event) =>
-                                    setFilter({
-                                      ...filter,
-                                      [key]:
-                                        event.target.value === ''
-                                          ? null
-                                          : Number(event.target.value),
-                                    })
-                                  }
-                                >
-                                  <option value="">
-                                    {key === 'tier'
-                                      ? 'Todos os tiers'
-                                      : key === 'enchantment'
-                                        ? 'Encantamento'
-                                        : 'Qualidade'}
+                            {filterSelects.map(({ key, label, options }) => (
+                              <select
+                                aria-label={key}
+                                key={key}
+                                value={filter[key] ?? ''}
+                                onChange={(event) =>
+                                  setFilter({
+                                    ...filter,
+                                    [key]:
+                                      event.target.value === ''
+                                        ? null
+                                        : Number(event.target.value),
+                                  })
+                                }
+                              >
+                                <option value="">{label}</option>
+                                {options.map(([value, text]) => (
+                                  <option key={value} value={value}>
+                                    {text}
                                   </option>
-                                  {(key === 'tier'
-                                    ? [1, 2, 3, 4, 5, 6, 7, 8]
-                                    : key === 'enchantment'
-                                      ? [0, 1, 2, 3, 4]
-                                      : [1, 2, 3, 4, 5]
-                                  ).map((value) => (
-                                    <option key={value} value={value}>
-                                      {key === 'tier'
-                                        ? `T${value}`
-                                        : key === 'enchantment'
-                                          ? `.${value}`
-                                          : qualities[value - 1]}
-                                    </option>
-                                  ))}
-                                </select>
-                              ),
-                            )}
+                                ))}
+                              </select>
+                            ))}
                             <button
                               title="Limpar filtros"
                               onClick={() => setFilter(emptyFilter)}
@@ -623,13 +531,13 @@ export default function App() {
                             </span>
                             <div>
                               <button
-                                disabled={busy || !!session?.closed_at}
+                                disabled={busy || closed}
                                 onClick={() => setModal('import')}
                               >
                                 Importar JSON
                               </button>
                               <button
-                                disabled={busy || !!session?.closed_at}
+                                disabled={busy || closed}
                                 onClick={() => setModal('manual')}
                               >
                                 <Plus size={14} />
@@ -637,7 +545,7 @@ export default function App() {
                               </button>
                               <button
                                 className="subtle-primary"
-                                disabled={busy || !!session?.closed_at}
+                                disabled={busy || closed}
                                 onClick={() =>
                                   void act(
                                     () => request('simulate', args),
@@ -652,15 +560,13 @@ export default function App() {
                           </div>
                         </>
                       )}
-                      {loading ? (
-                        <div className="empty" role="status">
-                          Carregando registros…
-                        </div>
-                      ) : tab === 'events' ? (
+                      {tab === 'events' ? (
                         <LootTable
                           rows={currentView.rows}
                           price={setPricing}
+                          toggleVoid={toggleVoid}
                           busy={busy}
+                          closed={closed}
                         />
                       ) : tab === 'players' ? (
                         <div className="table-wrap">
@@ -695,96 +601,39 @@ export default function App() {
                               )}
                             </tbody>
                           </table>
-                          {!currentView.rows.length && (
+                          {!Object.keys(currentView.totals.players).length && (
                             <div className="empty">
                               Nenhum jogador corresponde aos filtros.
                             </div>
                           )}
                         </div>
                       ) : (
-                        <>
-                          <div className="ledger-summary">
-                            <div>
-                              <span>Receitas recebidas</span>
-                              <strong>
-                                {silver(currentView.finance.income)} s
-                              </strong>
-                            </div>
-                            <div>
-                              <span>Despesas e regear</span>
-                              <strong>
-                                {silver(currentView.finance.expenses)} s
-                              </strong>
-                            </div>
-                            <div>
-                              <span>Acertos pagos</span>
-                              <strong>
-                                {silver(currentView.finance.settlements)} s
-                              </strong>
-                            </div>
-                            <button
-                              disabled={busy}
-                              onClick={() => setModal('ledger')}
-                            >
-                              <Plus size={15} />
-                              Lançamento
-                            </button>
-                            <button
-                              className="primary"
-                              disabled={
-                                busy || currentView.finance.available <= 0
-                              }
-                              onClick={() => setModal('split')}
-                            >
-                              Dividir saldo
-                              <ArrowUpRight size={15} />
-                            </button>
-                          </div>
-                          <div className="table-wrap">
-                            <table>
-                              <thead>
-                                <tr>
-                                  <th>Horário</th>
-                                  <th>Tipo</th>
-                                  <th>Jogador</th>
-                                  <th>Descrição</th>
-                                  <th>Silver</th>
-                                </tr>
-                              </thead>
-                              <tbody>
-                                {currentView.ledger.map((entry) => (
-                                  <tr key={entry.id}>
-                                    <td>{date(entry.occurred_at)}</td>
-                                    <td>
-                                      <span className="pill">
-                                        {kinds[entry.kind]}
-                                      </span>
-                                    </td>
-                                    <td>{entry.player}</td>
-                                    <td>{entry.description}</td>
-                                    <td>{silver(entry.amount)}</td>
-                                  </tr>
-                                ))}
-                              </tbody>
-                            </table>
-                            {!currentView.ledger.length && (
-                              <div className="empty">
-                                <CircleDollarSign size={30} />
-                                <h3>Nenhum lançamento financeiro</h3>
-                                <p>
-                                  Registre vendas recebidas, despesas e regear.
-                                  Loot estimado não entra no saldo.
-                                </p>
-                              </div>
-                            )}
-                          </div>
-                        </>
+                        <LedgerPanel
+                          ledger={currentView.ledger}
+                          finance={currentView.finance}
+                          busy={busy}
+                          add={() => setModal('ledger')}
+                          split={() => setModal('split')}
+                          reverse={(entry) =>
+                            setConfirmation({
+                              title: 'Estornar lançamento',
+                              message: `${entry.description} · ${silver(entry.amount)} s. Um lançamento oposto é registrado; o original continua no histórico. Estornos não podem ser desfeitos.`,
+                              confirmLabel: 'Registrar estorno',
+                              action: () =>
+                                request('reverse_ledger', {
+                                  ...args,
+                                  entry_id: entry.id,
+                                }),
+                              notice: 'Estorno registrado.',
+                            })
+                          }
+                        />
                       )}
                       <footer className="table-footer">
                         <span>
                           {tab === 'ledger'
                             ? 'Lançamentos manuais · valores inteiros em silver'
-                            : `Total filtrado: ${silver(currentView.totals.session.quantity)} itens · ${currentView.totals.session.unpriced_events} eventos sem preço`}
+                            : `Total filtrado: ${silver(currentView.totals.session.quantity)} itens · ${currentView.totals.session.unpriced_events} eventos sem preço · anulados não contam`}
                         </span>
                         <strong>
                           {tab === 'ledger'
@@ -815,41 +664,25 @@ export default function App() {
                 <div>
                   <div className="eyebrow">DO SEU JEITO</div>
                   <h1>Configurações</h1>
-                  <p>Preferências locais e status das integrações.</p>
+                  <p>Preferências locais, catálogo e status das integrações.</p>
                 </div>
               </div>
               {boot && (
-                <SettingsPanel
-                  settings={boot.settings}
+                <SettingsPage
+                  boot={boot}
                   busy={busy}
                   save={(settings) =>
                     void act(() => request('settings', { settings }))
                   }
+                  importCatalog={() =>
+                    void act(async () => {
+                      const info = await importCatalog();
+                      if (!info) return 'Importação do catálogo cancelada.';
+                      return `Catálogo importado: ${silver(info.item_count)} itens${info.skipped_count ? `, ${silver(info.skipped_count)} inválidos ignorados` : ''}.`;
+                    })
+                  }
                 />
               )}
-              <section className="settings-card">
-                <Shield />
-                <h2>Licenciamento</h2>
-                <span className="pill">Desabilitado · desenvolvimento</span>
-                <p>{boot?.license.reason ?? 'Nenhuma licença validada.'}</p>
-                <p>
-                  Esta versão funciona localmente sem autenticação. Não há
-                  validação offline de licença. Histórico e exportações
-                  permanecerão acessíveis após expiração na integração futura.
-                </p>
-              </section>
-              <section className="settings-card">
-                <FlaskConical />
-                <h2>Integrações</h2>
-                <p>
-                  Albion Data Project: contrato preparado; consulta ainda não
-                  implementada. Preços manuais disponíveis.
-                </p>
-                <p>
-                  Captura de rede e OCR: ausentes. Nenhum privilégio
-                  administrativo é necessário.
-                </p>
-              </section>
             </>
           ) : (
             <>
@@ -943,7 +776,6 @@ export default function App() {
           )}
           {modal === 'manual' && (
             <ManualForm
-              catalog={boot?.catalog ?? []}
               busy={busy}
               submit={(data) =>
                 void act(
@@ -959,64 +791,22 @@ export default function App() {
               busy={busy}
               submit={(json) =>
                 void act(async () => {
-                  const result = await request<{
-                    inserted: number;
-                    duplicates: number;
-                  }>('import', { ...args, json });
+                  const result = await request<InsertResult>('import', {
+                    ...args,
+                    json,
+                  });
                   return `${result.inserted} inseridos; ${result.duplicates} duplicados ignorados.`;
-                }, 'Importação concluída. Replays idênticos foram ignorados.')
+                })
               }
             />
           )}
           {modal === 'ledger' && (
-            <form
-              onSubmit={(event) => {
-                event.preventDefault();
-                const data = new FormData(event.currentTarget);
-                void act(() =>
-                  request('ledger', {
-                    ...args,
-                    kind: data.get('kind'),
-                    player: data.get('player'),
-                    description: data.get('description'),
-                    amount: Number(data.get('amount')),
-                  }),
-                );
-              }}
-            >
-              <Field label="Tipo">
-                <select name="kind">
-                  {Object.entries(kinds).map(([key, label]) => (
-                    <option key={key} value={key}>
-                      {label}
-                    </option>
-                  ))}
-                </select>
-              </Field>
-              <Field label="Jogador / responsável">
-                <input name="player" required maxLength={64} />
-              </Field>
-              <Field label="Descrição">
-                <input name="description" required maxLength={200} />
-              </Field>
-              <Field label="Valor efetivo em silver">
-                <input
-                  name="amount"
-                  type="number"
-                  min="1"
-                  max="1000000000000"
-                  step="1"
-                  required
-                />
-              </Field>
-              <p className="help">
-                Acerto pago reduz o saldo do caixa da sessão. Registre apenas
-                valores efetivamente recebidos ou pagos.
-              </p>
-              <button className="primary" disabled={busy}>
-                Registrar lançamento
-              </button>
-            </form>
+            <LedgerForm
+              busy={busy}
+              submit={(data) =>
+                void act(() => request('ledger', { ...args, ...data }))
+              }
+            />
           )}
           {modal === 'split' && currentView && (
             <SplitForm
@@ -1063,7 +853,7 @@ export default function App() {
                   request('price', {
                     ...args,
                     item_id: pricing.event.item.id,
-                    quality: pricing.event.item.quality,
+                    quality: pricing.event.quality,
                     amount: Number(value),
                   }),
                 'Preço atualizado para este item e qualidade na sessão.',
@@ -1076,8 +866,7 @@ export default function App() {
               </p>
             )}
             <p>
-              {pricing.event.item.name} ·{' '}
-              {qualities[pricing.event.item.quality - 1]}
+              {pricing.event.item.name} · {qualityLabel(pricing.event.quality)}
             </p>
             <Field label="Silver por unidade (zero é um preço conhecido)">
               <input
@@ -1093,18 +882,22 @@ export default function App() {
             </Field>
             <p className="help">
               {serverNames[session?.server ?? 'americas']} · {session?.city}.
-              Aplica a todos os eventos deste item e qualidade na sessão.
+              Aplica a todos os eventos deste item e qualidade na sessão
+              {pricing.event.quality === null
+                ? ', separado das qualidades conhecidas'
+                : ''}
+              .
             </p>
             <div className="form-actions">
               <button
                 type="button"
-                disabled={busy}
+                disabled={busy || !pricing.price}
                 onClick={() =>
                   void act(() =>
                     request('price', {
                       ...args,
                       item_id: pricing.event.item.id,
-                      quality: pricing.event.item.quality,
+                      quality: pricing.event.quality,
                       amount: null,
                     }),
                   )
@@ -1119,415 +912,17 @@ export default function App() {
           </form>
         </Dialog>
       )}
-    </div>
-  );
-}
-
-function LootTable({
-  rows,
-  price,
-  busy,
-}: {
-  rows: LootRow[];
-  price: (row: LootRow) => void;
-  busy: boolean;
-}) {
-  return (
-    <div className="table-wrap">
-      <table>
-        <thead>
-          <tr>
-            <th>ITEM</th>
-            <th>JOGADOR</th>
-            <th>TIER / ENC.</th>
-            <th>QUALIDADE</th>
-            <th>QTD.</th>
-            <th>PREÇO UNIT.</th>
-            <th>HORÁRIO / ORIGEM</th>
-          </tr>
-        </thead>
-        <tbody>
-          {rows.map((row) => (
-            <tr key={`${row.event.source}:${row.event.id}`}>
-              <td>
-                <div className="item-cell">
-                  <span className={`item-icon tier-${row.event.item.tier}`}>
-                    <Boxes size={20} />
-                    <small>T{row.event.item.tier}</small>
-                  </span>
-                  <div>
-                    <strong>{row.event.item.name}</strong>
-                    <small>{row.event.item.id}</small>
-                  </div>
-                </div>
-              </td>
-              <td>
-                <span className="avatar">{row.event.player.slice(0, 1)}</span>
-                {row.event.player}
-              </td>
-              <td>
-                <span className="tier">T{row.event.item.tier}</span>
-                <span
-                  className={`enchantment enchantment-${row.event.item.enchantment}`}
-                >
-                  .{row.event.item.enchantment}
-                </span>
-              </td>
-              <td>{qualities[row.event.item.quality - 1]}</td>
-              <td className="numeric">{silver(row.event.quantity)}</td>
-              <td>
-                <button
-                  className={`price-button ${row.price ? 'silver' : ''}`}
-                  disabled={busy}
-                  onClick={() => price(row)}
-                >
-                  {row.price
-                    ? `${silver(row.price.unit_silver)} s`
-                    : '+ Definir preço'}
-                </button>
-                {row.price && (
-                  <small
-                    className="price-context"
-                    title={`${row.price.server} · ${row.price.city} · ${date(row.price.queried_at)}`}
-                  >
-                    Manual · {row.price.city}
-                    <br />
-                    {date(row.price.queried_at)}
-                  </small>
-                )}
-              </td>
-              <td>
-                <small>{date(row.event.occurred_at)}</small>
-                <span
-                  className={`origin ${row.event.origin === 'simulated' ? 'simulated' : ''}`}
-                >
-                  {row.event.origin === 'simulated'
-                    ? 'Simulado'
-                    : row.event.origin === 'manual'
-                      ? 'Manual'
-                      : 'Observado (declarado)'}
-                  {row.imported ? ' · Importado' : ''}
-                </span>
-              </td>
-            </tr>
-          ))}
-        </tbody>
-      </table>
-      {!rows.length && (
-        <div className="empty">
-          <Boxes size={32} />
-          <h3>Nenhum loot por aqui, ainda.</h3>
-          <p>Gere uma simulação, registre loot manual ou ajuste os filtros.</p>
-        </div>
+      {confirmation && (
+        <ConfirmDialog
+          confirmation={confirmation}
+          error={error}
+          busy={busy}
+          cancel={() => {
+            if (!busy) setConfirmation(null);
+          }}
+          confirm={() => void act(confirmation.action, confirmation.notice)}
+        />
       )}
     </div>
-  );
-}
-
-function ManualForm({
-  catalog,
-  busy,
-  submit,
-}: {
-  catalog: Item[];
-  busy: boolean;
-  submit: (data: { item: Item; player: string; quantity: number }) => void;
-}) {
-  return (
-    <form
-      onSubmit={(event) => {
-        event.preventDefault();
-        const data = new FormData(event.currentTarget);
-        const item = catalog[Number(data.get('item'))];
-        submit({
-          item: { ...item, quality: Number(data.get('quality')) },
-          player: String(data.get('player')),
-          quantity: Number(data.get('quantity')),
-        });
-      }}
-    >
-      <Field label="Jogador">
-        <input autoFocus name="player" required maxLength={64} />
-      </Field>
-      <Field label="Item do catálogo inicial">
-        <select name="item">
-          {catalog.map((item, index) => (
-            <option key={item.id} value={index}>
-              {item.name} · T{item.tier}.{item.enchantment}
-            </option>
-          ))}
-        </select>
-      </Field>
-      <div className="form-grid">
-        <Field label="Qualidade">
-          <select name="quality">
-            {qualities.map((quality, index) => (
-              <option key={quality} value={index + 1}>
-                {quality}
-              </option>
-            ))}
-          </select>
-        </Field>
-        <Field label="Quantidade">
-          <input
-            name="quantity"
-            type="number"
-            defaultValue="1"
-            min="1"
-            max="1000000"
-            step="1"
-            required
-          />
-        </Field>
-      </div>
-      <p className="help">
-        Origem manual. Horário registrado no momento do envio.
-      </p>
-      <button className="primary" disabled={busy}>
-        Registrar loot
-      </button>
-    </form>
-  );
-}
-function ImportForm({
-  sessionId,
-  busy,
-  submit,
-}: {
-  sessionId: string;
-  busy: boolean;
-  submit: (json: string) => void;
-}) {
-  const [json, setJson] = useState('');
-  const [error, setError] = useState('');
-  return (
-    <form
-      onSubmit={(event) => {
-        event.preventDefault();
-        submit(json);
-      }}
-    >
-      <p className="help">
-        Contrato v1: schema_version e events. Máximo 5 MB / 10.000 eventos. A
-        origem é declarada pelo arquivo e não é certificada. O lote inteiro é
-        validado antes de salvar.
-      </p>
-      <Field label="ID da sessão de destino">
-        <input
-          readOnly
-          value={sessionId}
-          onFocus={(event) => event.target.select()}
-        />
-      </Field>
-      <Field label="Arquivo JSON">
-        <input
-          type="file"
-          accept=".json,application/json"
-          onChange={async (event) => {
-            const file = event.target.files?.[0];
-            if (!file) return;
-            try {
-              if (file.size > 5_000_000)
-                throw new Error('Arquivo excede 5 MB.');
-              const parsed = JSON.parse(await file.text()) as {
-                schema_version: number;
-                events: unknown[];
-              };
-              setJson(
-                JSON.stringify(
-                  {
-                    schema_version: parsed.schema_version,
-                    events: parsed.events,
-                  },
-                  null,
-                  2,
-                ),
-              );
-              setError('');
-            } catch (reason) {
-              setError(String(reason));
-              setJson('');
-            }
-          }}
-        />
-      </Field>
-      <Field label="Eventos normalizados">
-        <textarea
-          rows={9}
-          value={json}
-          onChange={(event) => setJson(event.target.value)}
-          required
-          placeholder={'{"schema_version":1,"events":[…]}'}
-        />
-      </Field>
-      {error && (
-        <p role="alert" className="error">
-          {error}
-        </p>
-      )}
-      <p className="help">
-        session_id deve corresponder ao destino. Exports da mesma sessão podem
-        ser reimportados; preços e acertos não são restaurados por esta
-        importação.
-      </p>
-      <button className="primary" disabled={busy || !json}>
-        Validar e importar
-      </button>
-    </form>
-  );
-}
-function SplitForm({
-  available,
-  players: initialPlayers,
-  busy,
-  preview,
-  submit,
-}: {
-  available: number;
-  players: string[];
-  busy: boolean;
-  preview: (amount: number, players: string[]) => Promise<Share[]>;
-  submit: (amount: number, players: string[]) => void;
-}) {
-  const [players, setPlayers] = useState(initialPlayers.join('\n'));
-  const [amount, setAmount] = useState(Math.min(available, 1_000_000_000_000));
-  const [shares, setShares] = useState<Share[]>([]);
-  const [error, setError] = useState('');
-  const [pending, setPending] = useState(false);
-  const names = () =>
-    players
-      .split('\n')
-      .map((player) => player.trim())
-      .filter(Boolean);
-  async function calculate(event: FormEvent) {
-    event.preventDefault();
-    setPending(true);
-    setError('');
-    try {
-      setShares(await preview(amount, names()));
-    } catch (reason) {
-      setError(String(reason));
-    } finally {
-      setPending(false);
-    }
-  }
-  return (
-    <form onSubmit={calculate}>
-      <Field label={`Saldo a dividir (disponível: ${silver(available)} s)`}>
-        <input
-          disabled={pending}
-          type="number"
-          value={amount}
-          min="1"
-          max={Math.min(available, 1_000_000_000_000)}
-          step="1"
-          onChange={(event) => {
-            setAmount(Number(event.target.value));
-            setShares([]);
-          }}
-          required
-        />
-      </Field>
-      <Field label="Participantes, um por linha">
-        <textarea
-          disabled={pending}
-          rows={4}
-          value={players}
-          onChange={(event) => {
-            setPlayers(event.target.value);
-            setShares([]);
-          }}
-          required
-        />
-      </Field>
-      <p className="help">
-        Divisão em silver inteiro. O resto é distribuído em ordem alfabética.
-        Confirmar registra pagamentos efetivos aos participantes.
-      </p>
-      {error && (
-        <p role="alert" className="error">
-          {error}
-        </p>
-      )}
-      {shares.map((share) => (
-        <div className="share" key={share.player}>
-          <span>{share.player}</span>
-          <strong>{silver(share.silver)} s</strong>
-        </div>
-      ))}
-      <div className="form-actions">
-        <button disabled={busy || pending}>Calcular divisão</button>
-        {!!shares.length && (
-          <button
-            type="button"
-            className="primary"
-            disabled={busy || pending}
-            onClick={() => submit(amount, names())}
-          >
-            Confirmar pagamentos
-          </button>
-        )}
-      </div>
-    </form>
-  );
-}
-function SettingsPanel({
-  settings,
-  busy,
-  save,
-}: {
-  settings: Settings;
-  busy: boolean;
-  save: (settings: Settings) => void;
-}) {
-  return (
-    <section className="settings-card">
-      <h2>Mercado padrão</h2>
-      <form
-        key={`${settings.server}:${settings.city}`}
-        onSubmit={(event) => {
-          event.preventDefault();
-          const data = new FormData(event.currentTarget);
-          save({
-            server: String(data.get('server')),
-            city: String(data.get('city')),
-          });
-        }}
-      >
-        <div className="form-grid">
-          <Field label="Servidor / região">
-            <select name="server" defaultValue={settings.server}>
-              {Object.entries(serverNames).map(([key, label]) => (
-                <option value={key} key={key}>
-                  {label}
-                </option>
-              ))}
-            </select>
-          </Field>
-          <Field label="Cidade">
-            <select name="city" defaultValue={settings.city}>
-              {[
-                'Bridgewatch',
-                'Martlock',
-                'Lymhurst',
-                'Fort Sterling',
-                'Thetford',
-                'Caerleon',
-                'Brecilien',
-              ].map((city) => (
-                <option key={city}>{city}</option>
-              ))}
-            </select>
-          </Field>
-        </div>
-        <p className="help">
-          Aplica somente a novas sessões, preservando o contexto dos preços
-          existentes.
-        </p>
-        <button className="primary" disabled={busy}>
-          Salvar preferências
-        </button>
-      </form>
-    </section>
   );
 }

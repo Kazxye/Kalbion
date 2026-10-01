@@ -1,34 +1,20 @@
+use crate::error::{invalid, Result};
+use chrono::{DateTime, SecondsFormat, Utc};
 use serde::{Deserialize, Serialize};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 pub const MAX_MONEY: i64 = 1_000_000_000_000;
+/// Totals are shown in JavaScript, so they must stay below 2^53.
+pub const MAX_TOTAL: i64 = 9_000_000_000_000_000;
+pub const MAX_QUANTITY: u32 = 1_000_000;
 
-#[derive(Debug, thiserror::Error)]
-pub enum Error {
-    #[error("{0}")]
-    Validation(String),
-    #[error("Falha no banco de dados local")]
-    Database(#[from] rusqlite::Error),
-    #[error("JSON inválido: {0}")]
-    Json(#[from] serde_json::Error),
-    #[error("Falha ao gerar CSV")]
-    Csv(#[from] csv::Error),
-}
-pub type Result<T> = std::result::Result<T, Error>;
-pub fn invalid(message: &str) -> Error {
-    Error::Validation(message.into())
-}
 pub fn text(value: &str, max: usize) -> Result<()> {
-    if value.trim().is_empty() || value.len() > max || value.chars().any(char::is_control) {
+    if value.trim().is_empty() || value.chars().count() > max || value.chars().any(char::is_control)
+    {
         return Err(invalid(
             "Texto vazio, longo demais ou com caracteres de controle",
         ));
     }
-    Ok(())
-}
-pub fn timestamp(value: &str) -> Result<()> {
-    chrono::DateTime::parse_from_rfc3339(value)
-        .map_err(|_| invalid("Horário deve usar RFC 3339"))?;
     Ok(())
 }
 pub fn money(value: i64) -> Result<()> {
@@ -37,61 +23,118 @@ pub fn money(value: i64) -> Result<()> {
     }
     Ok(())
 }
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+/// Canonical UTC form with fixed width, so equal instants compare equal and sort lexically.
+pub fn normalize_timestamp(value: &str) -> Result<String> {
+    let parsed =
+        DateTime::parse_from_rfc3339(value).map_err(|_| invalid("Horário deve usar RFC 3339"))?;
+    Ok(parsed
+        .with_timezone(&Utc)
+        .to_rfc3339_opts(SecondsFormat::Micros, true))
+}
+pub fn now() -> String {
+    Utc::now().to_rfc3339_opts(SecondsFormat::Micros, true)
+}
+pub fn normalize_player(value: &str) -> Result<String> {
+    text(value, 64)?;
+    Ok(value.trim().into())
+}
+pub fn validate_quality(quality: Option<u8>) -> Result<()> {
+    if quality.is_some_and(|value| !(1..=5).contains(&value)) {
+        return Err(invalid("Quality deve estar entre 1 e 5"));
+    }
+    Ok(())
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum Origin {
     Simulated,
     Manual,
     Observed,
 }
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(deny_unknown_fields)]
+impl Origin {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Simulated => "simulated",
+            Self::Manual => "manual",
+            Self::Observed => "observed",
+        }
+    }
+    pub fn parse(value: &str) -> Result<Self> {
+        match value {
+            "simulated" => Ok(Self::Simulated),
+            "manual" => Ok(Self::Manual),
+            "observed" => Ok(Self::Observed),
+            _ => Err(invalid("Origem desconhecida")),
+        }
+    }
+}
+
+/// An item type identified by its Albion UniqueName (e.g. `T5_BAG@1`).
+/// Tier and enchantment are derived from the name, so they cannot disagree with it.
+/// Quality belongs to a looted instance, not to the item type.
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
 pub struct Item {
     pub id: String,
     pub name: String,
-    pub tier: u8,
+    pub tier: Option<u8>,
     pub enchantment: u8,
-    pub quality: u8,
 }
 impl Item {
-    pub fn validate(&self) -> Result<()> {
-        text(&self.id, 100)?;
-        text(&self.name, 150)?;
-        if !(1..=8).contains(&self.tier) || self.enchantment > 4 || !(1..=5).contains(&self.quality)
-        {
-            return Err(invalid("Tier, enchantment ou quality inválido"));
-        }
-        let prefix = format!("T{}_", self.tier);
-        let suffix = format!("@{}", self.enchantment);
-        let base = if self.enchantment > 0 {
-            self.id
-                .strip_suffix(&suffix)
-                .ok_or_else(|| invalid("Enchantment não corresponde ao ID"))?
-        } else {
-            &self.id
-        };
-        if !base.starts_with(&prefix)
-            || !base
-                .chars()
-                .all(|ch| ch.is_ascii_uppercase() || ch.is_ascii_digit() || ch == '_')
-        {
-            return Err(invalid(
-                "ID do catálogo não corresponde ao tier/enchantment",
-            ));
-        }
-        Ok(())
+    pub fn new(id: &str, name: &str) -> Result<Self> {
+        let (tier, enchantment) = parse_unique_name(id)?;
+        text(name, 150)?;
+        Ok(Self {
+            id: id.into(),
+            name: name.trim().into(),
+            tier,
+            enchantment,
+        })
     }
 }
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(deny_unknown_fields)]
+/// Items such as `UNIQUE_HIDEOUT` or `TREASURE_*` have no tier; that is valid, not an error.
+pub fn parse_unique_name(id: &str) -> Result<(Option<u8>, u8)> {
+    let (base, enchantment) = match id.split_once('@') {
+        Some((base, level)) => (
+            base,
+            match level {
+                "1" => 1,
+                "2" => 2,
+                "3" => 3,
+                "4" => 4,
+                _ => return Err(invalid("Enchantment do ID deve estar entre @1 e @4")),
+            },
+        ),
+        None => (id, 0),
+    };
+    if base.is_empty()
+        || id.len() > 100
+        || !base
+            .bytes()
+            .all(|byte| byte.is_ascii_uppercase() || byte.is_ascii_digit() || byte == b'_')
+    {
+        return Err(invalid("ID de item inválido"));
+    }
+    let tier = base
+        .strip_prefix('T')
+        .and_then(|rest| rest.split_once('_'))
+        .and_then(|(tier, _)| tier.parse::<u8>().ok())
+        .filter(|tier| (1..=8).contains(tier));
+    Ok((tier, enchantment))
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
 pub struct LootReceived {
     pub id: String,
     pub origin: Origin,
     pub source: String,
     pub session_id: String,
+    /// Always in the canonical form produced by `normalize_timestamp`.
     pub occurred_at: String,
     pub player: String,
     pub item: Item,
+    /// `None` when the source did not report quality; never guessed.
+    pub quality: Option<u8>,
     pub quantity: u32,
 }
 impl LootReceived {
@@ -100,15 +143,21 @@ impl LootReceived {
         text(&self.source, 128)?;
         text(&self.session_id, 128)?;
         text(&self.player, 64)?;
-        timestamp(&self.occurred_at)?;
-        self.item.validate()?;
-        if self.quantity == 0 || self.quantity > 1_000_000 {
+        if normalize_timestamp(&self.occurred_at)? != self.occurred_at {
+            return Err(invalid("Horário não normalizado"));
+        }
+        if Item::new(&self.item.id, &self.item.name)? != self.item {
+            return Err(invalid("Tier/enchantment não corresponde ao ID do item"));
+        }
+        validate_quality(self.quality)?;
+        if self.quantity == 0 || self.quantity > MAX_QUANTITY {
             return Err(invalid("Quantidade deve estar entre 1 e 1.000.000"));
         }
         Ok(())
     }
 }
-#[derive(Debug, Clone, Serialize, Deserialize)]
+
+#[derive(Debug, Clone, Serialize)]
 pub struct Session {
     pub id: String,
     pub name: String,
@@ -117,7 +166,7 @@ pub struct Session {
     pub server: String,
     pub city: String,
 }
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 pub struct Settings {
     pub server: String,
@@ -150,20 +199,33 @@ impl Settings {
         Ok(())
     }
 }
-#[derive(Debug, Clone, Serialize, Deserialize)]
+
+#[derive(Debug, Clone, Copy, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum PriceSource {
+    Manual,
+}
+#[derive(Debug, Clone, Serialize)]
 pub struct Price {
     pub unit_silver: i64,
-    pub source: String,
+    pub source: PriceSource,
     pub server: String,
     pub city: String,
-    pub queried_at: String,
+    /// When Kalbion stored the price.
+    pub recorded_at: String,
+    /// When the market observed it; only external sources know this.
+    pub observed_at: Option<String>,
 }
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize)]
 pub struct LootRow {
     pub event: LootReceived,
     pub imported: bool,
+    /// Voided rows stay stored (so replays remain duplicates) but are excluded from totals.
+    pub voided_at: Option<String>,
     pub price: Option<Price>,
 }
+
+/// `quality: Some(0)` selects events whose quality is unknown.
 #[derive(Debug, Default, Clone, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct Filter {
@@ -174,30 +236,34 @@ pub struct Filter {
     pub quality: Option<u8>,
 }
 impl Filter {
-    pub fn matches(&self, row: &LootRow) -> bool {
-        let event = &row.event;
-        event
-            .player
-            .to_lowercase()
-            .contains(&self.player.to_lowercase())
-            && format!("{} {}", event.item.name, event.item.id)
-                .to_lowercase()
-                .contains(&self.item.to_lowercase())
-            && self.tier.is_none_or(|value| value == event.item.tier)
-            && self
-                .enchantment
-                .is_none_or(|value| value == event.item.enchantment)
-            && self.quality.is_none_or(|value| value == event.item.quality)
+    pub fn validate(&self) -> Result<()> {
+        if self.player.chars().count() > 64
+            || self.item.chars().count() > 150
+            || self.tier.is_some_and(|tier| !(1..=8).contains(&tier))
+            || self.enchantment.is_some_and(|value| value > 4)
+            || self.quality.is_some_and(|value| value > 5)
+        {
+            return Err(invalid("Filtro inválido"));
+        }
+        Ok(())
+    }
+    pub fn is_empty(&self) -> bool {
+        self.player.trim().is_empty()
+            && self.item.trim().is_empty()
+            && self.tier.is_none()
+            && self.enchantment.is_none()
+            && self.quality.is_none()
     }
 }
-#[derive(Debug, Default, Serialize, Deserialize)]
+
+#[derive(Debug, Default, Serialize)]
 pub struct Total {
     pub events: u64,
     pub quantity: u64,
     pub estimated_silver: i64,
     pub unpriced_events: u64,
 }
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Serialize)]
 pub struct Totals {
     pub session: Total,
     pub players: BTreeMap<String, Total>,
@@ -207,7 +273,7 @@ pub fn totals(rows: &[LootRow]) -> Result<Totals> {
         session: Total::default(),
         players: BTreeMap::new(),
     };
-    for row in rows {
+    for row in rows.iter().filter(|row| row.voided_at.is_none()) {
         let value = row
             .price
             .as_ref()
@@ -228,7 +294,7 @@ pub fn totals(rows: &[LootRow]) -> Result<Totals> {
                 total.estimated_silver = total
                     .estimated_silver
                     .checked_add(value)
-                    .filter(|sum| *sum <= 9_000_000_000_000_000)
+                    .filter(|sum| *sum <= MAX_TOTAL)
                     .ok_or_else(|| invalid("Total excedeu o limite"))?;
             } else {
                 total.unpriced_events += 1;
@@ -237,7 +303,8 @@ pub fn totals(rows: &[LootRow]) -> Result<Totals> {
     }
     Ok(result)
 }
-#[derive(Debug, Clone, Serialize, Deserialize)]
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum LedgerKind {
     Income,
@@ -245,7 +312,27 @@ pub enum LedgerKind {
     Regear,
     Settlement,
 }
-#[derive(Debug, Clone, Serialize, Deserialize)]
+impl LedgerKind {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Income => "income",
+            Self::Expense => "expense",
+            Self::Regear => "regear",
+            Self::Settlement => "settlement",
+        }
+    }
+    pub fn parse(value: &str) -> Result<Self> {
+        match value {
+            "income" => Ok(Self::Income),
+            "expense" => Ok(Self::Expense),
+            "regear" => Ok(Self::Regear),
+            "settlement" => Ok(Self::Settlement),
+            _ => Err(invalid("Tipo de lançamento desconhecido")),
+        }
+    }
+}
+/// The ledger is append-only: mistakes are corrected by a reversal entry, never by editing.
+#[derive(Debug, Clone, Serialize)]
 pub struct LedgerEntry {
     pub id: String,
     pub session_id: String,
@@ -254,8 +341,12 @@ pub struct LedgerEntry {
     pub description: String,
     pub amount: i64,
     pub occurred_at: String,
+    /// Set on a reversal entry: the entry it cancels.
+    pub reverses: Option<String>,
+    /// Set on an entry that has been cancelled by a reversal.
+    pub reversed_by: Option<String>,
 }
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Serialize)]
 pub struct Finance {
     pub income: i64,
     pub expenses: i64,
@@ -275,34 +366,43 @@ pub fn finance(entries: &[LedgerEntry]) -> Result<Finance> {
             LedgerKind::Expense | LedgerKind::Regear => &mut result.expenses,
             LedgerKind::Settlement => &mut result.settlements,
         };
+        let amount = if entry.reverses.is_some() {
+            -entry.amount
+        } else {
+            entry.amount
+        };
         *target = target
-            .checked_add(entry.amount)
-            .filter(|value| *value <= 4_000_000_000_000_000)
+            .checked_add(amount)
+            .filter(|value| value.abs() <= MAX_TOTAL / 2)
             .ok_or_else(|| invalid("Saldo excedeu o limite"))?;
     }
     result.available = result.income - result.expenses - result.settlements;
     Ok(result)
 }
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Serialize)]
 pub struct Split {
     pub player: String,
     pub silver: i64,
 }
+/// Equal split in whole silver; the remainder goes one silver each, in alphabetical order.
 pub fn split(amount: i64, players: &[String]) -> Result<Vec<Split>> {
     money(amount)?;
-    let unique: std::collections::BTreeSet<_> = players.iter().collect();
-    if unique.is_empty() || unique.len() != players.len() || players.len() > 100 {
+    let players = players
+        .iter()
+        .map(|player| normalize_player(player))
+        .collect::<Result<Vec<_>>>()?;
+    let unique: BTreeSet<_> = players.iter().map(|player| player.to_lowercase()).collect();
+    if players.is_empty() || unique.len() != players.len() || players.len() > 100 {
         return Err(invalid("Informe 1 a 100 participantes sem duplicatas"));
     }
-    for player in players {
-        text(player, 64)?;
-    }
+    let mut players = players;
+    players.sort();
     let count = players.len() as i64;
-    Ok(unique
+    Ok(players
         .into_iter()
         .enumerate()
         .map(|(index, player)| Split {
-            player: player.clone(),
+            player,
             silver: amount / count + i64::from((index as i64) < amount % count),
         })
         .collect())
