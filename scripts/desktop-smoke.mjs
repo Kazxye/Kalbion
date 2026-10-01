@@ -188,7 +188,9 @@ try {
     `the app did not call the mock market; start tauri-driver with KALBION_ADP_URL=http://127.0.0.1:${adpPort}`,
   );
   assert.ok(
-    adpRequests.every((url) => url.includes('locations=Bridgewatch')),
+    adpRequests.every((url) =>
+      url.includes(`locations=${encodeURIComponent(selected.city)}`),
+    ),
     'refresh uses the session market',
   );
   const priced = await ipc({

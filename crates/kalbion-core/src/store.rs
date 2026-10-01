@@ -6,7 +6,7 @@ use crate::{adapters, import, migrations};
 use rusqlite::types::{FromSql, FromSqlError, FromSqlResult, ToSqlOutput, ValueRef};
 use rusqlite::{params, Connection, OptionalExtension, Row, ToSql};
 use serde::Serialize;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
 use std::path::Path;
 
 pub struct Store {
@@ -179,6 +179,19 @@ fn insert_ledger(connection: &Connection, entry: &LedgerEntry) -> Result<()> {
         ],
     )?;
     Ok(())
+}
+/// Item/quality pairs that still count in the session (at least one row not voided), mapped
+/// to whether they have a manual price.
+fn market_pairs(rows: &[LootRow]) -> BTreeMap<(String, Option<u8>), bool> {
+    let mut pairs = BTreeMap::new();
+    for row in rows.iter().filter(|row| row.voided_at.is_none()) {
+        let manual = row
+            .price
+            .as_ref()
+            .is_some_and(|price| price.source == PriceSource::Manual);
+        pairs.insert((row.event.item.id.clone(), row.event.quality), manual);
+    }
+    pairs
 }
 /// Case-insensitive (ASCII) substring pattern for LIKE; empty input disables the condition.
 fn like_pattern(value: &str) -> String {
@@ -646,17 +659,13 @@ impl Store {
     }
     pub fn market_plan(&self, session_id: &str) -> Result<MarketPlan> {
         let session = self.session(session_id)?;
-        let mut wanted = Vec::new();
-        for row in self.rows(session_id, &Filter::default())? {
-            let manual = row
-                .price
-                .is_some_and(|price| price.source == PriceSource::Manual);
-            if let Some(quality) = row.event.quality.filter(|_| !manual) {
-                wanted.push((row.event.item.id, quality));
-            }
-        }
-        wanted.sort();
-        wanted.dedup();
+        let wanted = market_pairs(&self.rows(session_id, &Filter::default())?)
+            .into_iter()
+            .filter(|(_, manual)| !manual)
+            .filter_map(|((item_id, quality), _)| Some((item_id, quality?)))
+            // Loot migrated from old versions was never re-validated; such IDs cannot be quoted.
+            .filter(|(item_id, _)| parse_unique_name(item_id).is_ok())
+            .collect();
         Ok(MarketPlan {
             server: session.server,
             city: session.city,
@@ -679,48 +688,37 @@ impl Store {
             ));
         }
         let mut rows = self.rows(session_id, &Filter::default())?;
-        let mut result = MarketRefresh::default();
-        let mut pairs: Vec<(Option<u8>, &str, bool)> = rows
-            .iter()
-            .map(|row| {
-                let manual = row
-                    .price
-                    .as_ref()
-                    .is_some_and(|price| price.source == PriceSource::Manual);
-                (row.event.quality, row.event.item.id.as_str(), manual)
-            })
-            .collect();
-        pairs.sort();
-        pairs.dedup();
-        result.unknown_quality = pairs
-            .iter()
-            .filter(|(quality, ..)| quality.is_none())
-            .count();
-        result.manual_kept = pairs
-            .iter()
-            .filter(|(quality, _, manual)| quality.is_some() && *manual)
-            .count();
-        let recorded_at = now();
-        let mut prices = Vec::new();
-        for (item_id, quality) in &plan.wanted {
-            if pairs
+        let pairs = market_pairs(&rows);
+        let mut result = MarketRefresh {
+            unknown_quality: pairs
                 .iter()
-                .any(|pair| pair.0 == Some(*quality) && pair.1 == item_id && pair.2)
-            {
+                .filter(|((_, quality), manual)| quality.is_none() && !*manual)
+                .count(),
+            manual_kept: pairs
+                .iter()
+                .filter(|((_, quality), manual)| quality.is_some() && **manual)
+                .count(),
+            ..MarketRefresh::default()
+        };
+        let quotes: HashMap<(&str, u8), &Quote> = quotes
+            .iter()
+            .map(|quote| ((quote.item_id.as_str(), quote.quality), quote))
+            .collect();
+        let recorded_at = now();
+        let mut prices: HashMap<(String, u8), Price> = HashMap::new();
+        for (item_id, quality) in &plan.wanted {
+            if pairs.get(&(item_id.clone(), Some(*quality))) != Some(&false) {
+                // Now manual, or no longer an active pair of this session.
                 continue;
             }
-            let Some(quote) = quotes
-                .iter()
-                .find(|quote| quote.item_id == *item_id && quote.quality == *quality)
-            else {
+            let Some(quote) = quotes.get(&(item_id.as_str(), *quality)) else {
                 result.unavailable += 1;
                 continue;
             };
             money(quote.unit_silver)?;
             normalize_timestamp(&quote.observed_at)?;
-            prices.push((
-                item_id.clone(),
-                *quality,
+            prices.insert(
+                (item_id.clone(), *quality),
                 Price {
                     unit_silver: quote.unit_silver,
                     source: PriceSource::AlbionData,
@@ -729,19 +727,18 @@ impl Store {
                     recorded_at: recorded_at.clone(),
                     observed_at: Some(quote.observed_at.clone()),
                 },
-            ));
+            );
         }
-        for (item_id, quality, price) in &prices {
-            for row in rows
-                .iter_mut()
-                .filter(|row| same_priced_item(row, item_id, Some(*quality)))
-            {
-                row.price = Some(price.clone());
+        for row in &mut rows {
+            if let Some(quality) = row.event.quality {
+                if let Some(price) = prices.get(&(row.event.item.id.clone(), quality)) {
+                    row.price = Some(price.clone());
+                }
             }
         }
         totals(&rows)?;
         let transaction = self.connection.transaction()?;
-        for (item_id, quality, price) in &prices {
+        for ((item_id, quality), price) in &prices {
             transaction.execute(
                 "INSERT INTO item_prices (session_id, item_id, quality, unit_silver, source,
                  server, city, recorded_at, observed_at)

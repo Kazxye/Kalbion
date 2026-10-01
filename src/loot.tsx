@@ -139,7 +139,7 @@ export function LootView({
         </div>
         <div className="toolbar-actions">
           <button
-            disabled={busy || !view.rows.length}
+            disabled={busy || !view.full_totals.session.events}
             title={`Consulta o Albion Data Project em ${view.session.city}. Preços manuais prevalecem.`}
             onClick={refreshPrices}
           >

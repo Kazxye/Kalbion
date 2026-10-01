@@ -3,7 +3,7 @@
 //! minutes, and an HTTP 429 pauses every request until the server's `Retry-After` passes.
 use crate::domain::{parse_unique_name, validate_quality, CITIES, MAX_MONEY};
 use crate::error::{invalid, Error, Result};
-use chrono::{NaiveDateTime, SecondsFormat};
+use chrono::{DateTime, NaiveDateTime, SecondsFormat, Utc};
 use serde::Deserialize;
 use std::collections::{BTreeSet, HashMap};
 use std::sync::{Mutex, PoisonError};
@@ -18,6 +18,11 @@ const MAX_RESPONSE_BYTES: u64 = 4 * 1024 * 1024;
 const MAX_ITEMS_IN_URL: usize = 1800;
 const DEFAULT_BACKOFF: Duration = Duration::from_secs(60);
 const MAX_BACKOFF: Duration = Duration::from_secs(10 * 60);
+/// A pooled connection closed by the server fails almost at once; only such fast failures are
+/// retried, so one request never waits for two full timeouts.
+const FAST_FAILURE: Duration = Duration::from_secs(2);
+/// Observation dates further ahead than this are bogus rather than clock skew.
+const MAX_CLOCK_SKEW: chrono::TimeDelta = chrono::TimeDelta::minutes(10);
 
 /// The lowest current sell order for one item and quality in one city.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -121,10 +126,9 @@ impl AlbionDataProject {
             for pair in chunk {
                 let quote = rows
                     .iter()
-                    .filter(|row| {
-                        row.item_id == pair.0 && row.quality == pair.1 && row.city == city
-                    })
-                    .find_map(to_quote);
+                    .filter(|quote| quote.item_id == pair.0 && quote.quality == pair.1)
+                    .min_by_key(|quote| quote.unit_silver)
+                    .cloned();
                 cache.insert(key(pair), (fetched, quote.clone()));
                 quotes.extend(quote);
             }
@@ -141,7 +145,9 @@ impl AlbionDataProject {
         };
         Ok(self.base_url.clone().unwrap_or_else(|| official.into()))
     }
-    fn fetch(&self, base: &str, city: &str, chunk: &[(String, u8)]) -> Result<Vec<Row>> {
+    /// Valid quotes in `city` from one request. Rows that do not parse are skipped (and
+    /// logged) instead of failing the whole answer.
+    fn fetch(&self, base: &str, city: &str, chunk: &[(String, u8)]) -> Result<Vec<Quote>> {
         if let Some(until) = *self.lock_blocked() {
             if let Some(wait) = until.checked_duration_since(Instant::now()) {
                 return Err(rate_limited(wait));
@@ -164,9 +170,15 @@ impl AlbionDataProject {
                 .join(",")
         );
         // Same reasoning as the icon cache: a stale pooled connection fails at once and one
-        // retry is safe for a GET; a timeout is not retried.
+        // retry is safe for a GET; a timeout or a slow failure is not retried.
+        let started = Instant::now();
         let mut response = match self.agent.get(&url).call() {
-            Err(error) if !matches!(error, ureq::Error::Timeout(_)) => self.agent.get(&url).call(),
+            Err(error)
+                if !matches!(error, ureq::Error::Timeout(_))
+                    && started.elapsed() < FAST_FAILURE =>
+            {
+                self.agent.get(&url).call()
+            }
             result => result,
         }
         .map_err(|error| unavailable("market_request_failed", &error.to_string()))?;
@@ -201,8 +213,29 @@ impl AlbionDataProject {
             .limit(MAX_RESPONSE_BYTES)
             .read_to_vec()
             .map_err(|error| unavailable("market_response_unreadable", &error.to_string()))?;
-        serde_json::from_slice(&bytes)
-            .map_err(|error| unavailable("market_response_invalid", &error.to_string()))
+        let rows: Vec<serde_json::Value> = serde_json::from_slice(&bytes)
+            .map_err(|error| unavailable("market_response_invalid", &error.to_string()))?;
+        let now = Utc::now();
+        let mut rejected = 0;
+        let mut quotes = Vec::new();
+        for row in rows {
+            match serde_json::from_value::<Row>(row)
+                .map_err(|_| ())
+                .and_then(|row| {
+                    if row.city == city {
+                        to_quote(&row, now)
+                    } else {
+                        Ok(None)
+                    }
+                }) {
+                Ok(quote) => quotes.extend(quote),
+                Err(()) => rejected += 1,
+            }
+        }
+        if rejected > 0 {
+            tracing::warn!(operation = "market_rows_rejected", rejected);
+        }
+        Ok(quotes)
     }
     fn lock_cache(&self) -> std::sync::MutexGuard<'_, HashMap<CacheKey, (Instant, Option<Quote>)>> {
         self.cache.lock().unwrap_or_else(PoisonError::into_inner)
@@ -235,22 +268,31 @@ fn chunks(pairs: &[(String, u8)]) -> Vec<&[(String, u8)]> {
     }
     result
 }
-/// The project reports "no orders" as price 0 with date 0001-01-01; that is an absent price.
-fn to_quote(row: &Row) -> Option<Quote> {
-    if row.sell_price_min <= 0 || row.sell_price_min > MAX_MONEY {
-        return None;
+/// The project reports "no orders" as price 0 with date 0001-01-01; that is an absent price
+/// (`Ok(None)`). A positive price with an unreadable or future date is rejected (`Err`), so a
+/// format change shows up in the log instead of silently reading as "no offer".
+fn to_quote(row: &Row, now: DateTime<Utc>) -> std::result::Result<Option<Quote>, ()> {
+    if row.sell_price_min == 0 {
+        return Ok(None);
     }
-    let observed = NaiveDateTime::parse_from_str(&row.sell_price_min_date, "%Y-%m-%dT%H:%M:%S")
-        .ok()
-        .filter(|date| date.and_utc().timestamp() > 0)?;
-    Some(Quote {
+    if row.sell_price_min < 0 || row.sell_price_min > MAX_MONEY {
+        return Err(());
+    }
+    let observed = NaiveDateTime::parse_from_str(&row.sell_price_min_date, "%Y-%m-%dT%H:%M:%S%.f")
+        .map(|date| date.and_utc())
+        .or_else(|_| {
+            DateTime::parse_from_rfc3339(&row.sell_price_min_date).map(|date| date.to_utc())
+        })
+        .map_err(|_| ())?;
+    if observed.timestamp() <= 0 || observed > now + MAX_CLOCK_SKEW {
+        return Err(());
+    }
+    Ok(Some(Quote {
         item_id: row.item_id.clone(),
         quality: row.quality,
         unit_silver: row.sell_price_min,
-        observed_at: observed
-            .and_utc()
-            .to_rfc3339_opts(SecondsFormat::Micros, true),
-    })
+        observed_at: observed.to_rfc3339_opts(SecondsFormat::Micros, true),
+    }))
 }
 fn rate_limited(wait: Duration) -> Error {
     Error::Unavailable(format!(

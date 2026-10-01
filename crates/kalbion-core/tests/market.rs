@@ -350,3 +350,94 @@ fn live_service_answers_for_every_server() {
         }
     }
 }
+
+fn hostile(_: &str) -> (u16, String, Option<&'static str>) {
+    let body = json!([
+        row("T4_BAG", "Lymhurst", 1, 900, "2026-10-01T12:00:00"),
+        // Duplicates: the lowest offer wins.
+        row("T4_BAG", "Lymhurst", 1, 100, "2026-10-01T12:00:00"),
+        // Malformed rows for anything must not sink the valid ones.
+        { "item_id": "T4_BAG", "city": "Lymhurst", "quality": 300, "sell_price_min": 5, "sell_price_min_date": "2026-10-01T12:00:00" },
+        { "item_id": "T4_BAG", "city": "Lymhurst", "quality": 2, "sell_price_min": null },
+        row("T4_BAG", "Lymhurst", 2, -5, "2026-10-01T12:00:00"),
+        // Other date spellings are still read; dates in the future are not.
+        row("T5_BAG@1", "Lymhurst", 1, 700, "2026-10-01T12:00:00.250+03:00"),
+        row("T6_BAG", "Lymhurst", 1, 600, "2099-01-01T00:00:00"),
+        row("T7_BAG", "Lymhurst", 1, 500, "yesterday"),
+    ]);
+    (200, body.to_string(), None)
+}
+
+#[test]
+fn malformed_rows_are_skipped_and_the_lowest_duplicate_wins() {
+    let (url, _) = serve(hostile);
+    let quotes = AlbionDataProject::with_base_url(url)
+        .quotes(
+            "europe",
+            "Lymhurst",
+            &pairs(&[
+                ("T4_BAG", 1),
+                ("T4_BAG", 2),
+                ("T5_BAG@1", 1),
+                ("T6_BAG", 1),
+                ("T7_BAG", 1),
+            ]),
+        )
+        .unwrap();
+    let found: Vec<_> = quotes
+        .iter()
+        .map(|quote| {
+            (
+                quote.item_id.as_str(),
+                quote.unit_silver,
+                quote.observed_at.as_str(),
+            )
+        })
+        .collect();
+    assert_eq!(
+        found,
+        [
+            ("T4_BAG", 100, "2026-10-01T12:00:00.000000Z"),
+            ("T5_BAG@1", 700, "2026-10-01T09:00:00.250000Z"),
+        ]
+    );
+}
+
+#[test]
+fn voided_loot_is_not_quoted_and_counts_cover_only_what_needs_a_price() {
+    let mut store = Store::open(":memory:").unwrap();
+    let session = store.create_session("Counts").unwrap();
+    for (item_id, quality) in [
+        ("T4_BAG", Some(1)),
+        ("T5_BAG@1", Some(1)),
+        ("T4_WOOD", None),
+        ("T6_ORE", None),
+    ] {
+        store
+            .manual(&session.id, "Alice", item_id, quality, 1)
+            .unwrap();
+    }
+    let rows = store.rows(&session.id, &Filter::default()).unwrap();
+    let bag = rows
+        .iter()
+        .find(|row| row.event.item.id == "T5_BAG@1")
+        .unwrap();
+    store
+        .set_voided(&session.id, &bag.event.source, &bag.event.id, true)
+        .unwrap();
+    store.price(&session.id, "T4_WOOD", None, Some(5)).unwrap();
+    let plan = store.market_plan(&session.id).unwrap();
+    assert_eq!(plan.wanted, pairs(&[("T4_BAG", 1)]));
+    let result = store
+        .apply_market_quotes(&session.id, &plan, &[quote("T4_BAG", 1, 10)])
+        .unwrap();
+    assert_eq!(
+        (
+            result.updated,
+            result.unavailable,
+            result.manual_kept,
+            result.unknown_quality
+        ),
+        (1, 0, 0, 1)
+    );
+}
