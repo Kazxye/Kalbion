@@ -1,137 +1,432 @@
 import { useEffect, useState } from 'react';
-import { Boxes } from 'lucide-react';
+import {
+  Ban,
+  Boxes,
+  FlaskConical,
+  Plus,
+  RotateCcw,
+  Search,
+  X,
+} from 'lucide-react';
 import { request } from './api';
-import { Field, ItemIcon } from './components';
-import { date, qualities, qualityLabel, silver, tierLabel } from './format';
-import type { Item, LootRow } from './types';
+import { EmptyState, Field, InlineError } from './components';
+import { date, qualities, silver, tierLabel } from './format';
+import { ItemIcon, OriginTag, QualityMark, TierBadge } from './item';
+import type { Filter, Item, LootRow, View } from './types';
 
-export function LootTable({
-  rows,
+export const emptyFilter: Filter = {
+  player: '',
+  item: '',
+  tier: null,
+  enchantment: null,
+  quality: null,
+};
+const isFiltered = (filter: Filter) =>
+  JSON.stringify(filter) !== JSON.stringify(emptyFilter);
+const filterSelects = [
+  {
+    key: 'tier',
+    label: 'Tier',
+    all: 'Tier',
+    options: [1, 2, 3, 4, 5, 6, 7, 8].map((value) => [value, `T${value}`]),
+  },
+  {
+    key: 'enchantment',
+    label: 'Encantamento',
+    all: 'Encantamento',
+    options: [0, 1, 2, 3, 4].map((value) => [
+      value,
+      value ? `.${value}` : '.0 (nenhum)',
+    ]),
+  },
+  {
+    key: 'quality',
+    label: 'Qualidade',
+    all: 'Qualidade',
+    options: [
+      ...qualities.map((label, index) => [index + 1, label]),
+      [0, 'Desconhecida'],
+    ],
+  },
+] as const;
+const closedHint = 'Reabra a sessão para alterar o loot';
+
+export function LootView({
+  view,
+  filter,
+  setFilter,
+  loading,
+  busy,
+  closed,
+  simulate,
+  register,
+  price,
+  toggleVoid,
+}: {
+  view: View;
+  filter: Filter;
+  setFilter: (filter: Filter) => void;
+  loading: boolean;
+  busy: boolean;
+  closed: boolean;
+  simulate: () => void;
+  register: () => void;
+  price: (row: LootRow) => void;
+  toggleVoid: (row: LootRow) => void;
+}) {
+  const filtered = isFiltered(filter);
+  const voided = view.rows.filter((row) => row.voided_at).length;
+  return (
+    <>
+      <div className="toolbar">
+        <div className="filters" role="search" aria-label="Filtrar loot">
+          <label className="search">
+            <Search size={15} aria-hidden />
+            <input
+              aria-label="Buscar item por nome ou ID"
+              placeholder="Buscar item ou ID"
+              maxLength={150}
+              value={filter.item}
+              onChange={(event) =>
+                setFilter({ ...filter, item: event.target.value })
+              }
+            />
+          </label>
+          <input
+            className="player"
+            aria-label="Filtrar jogador"
+            placeholder="Jogador"
+            maxLength={64}
+            value={filter.player}
+            onChange={(event) =>
+              setFilter({ ...filter, player: event.target.value })
+            }
+          />
+          {filterSelects.map(({ key, label, all, options }) => (
+            <select
+              aria-label={label}
+              key={key}
+              value={filter[key] ?? ''}
+              onChange={(event) =>
+                setFilter({
+                  ...filter,
+                  [key]:
+                    event.target.value === ''
+                      ? null
+                      : Number(event.target.value),
+                })
+              }
+            >
+              <option value="">{all}</option>
+              {options.map(([value, text]) => (
+                <option key={value} value={value}>
+                  {text}
+                </option>
+              ))}
+            </select>
+          ))}
+          <button
+            className="ghost"
+            disabled={!filtered}
+            onClick={() => setFilter(emptyFilter)}
+          >
+            <X size={15} aria-hidden />
+            Limpar filtros
+          </button>
+        </div>
+        <div className="toolbar-actions">
+          <button
+            disabled={busy || closed}
+            title={closed ? closedHint : undefined}
+            onClick={simulate}
+          >
+            <FlaskConical size={15} aria-hidden />
+            Gerar simulação
+          </button>
+          <button
+            className="primary"
+            disabled={busy || closed}
+            title={closed ? closedHint : undefined}
+            onClick={register}
+          >
+            <Plus size={16} aria-hidden />
+            Registrar loot
+          </button>
+        </div>
+      </div>
+      <div className="status-line" aria-live="polite">
+        <span>
+          {view.rows.length}{' '}
+          {filtered ? 'registros correspondem aos filtros' : 'registros'}
+          {voided > 0 && `, ${voided} anulados`}
+          {closed && '. Sessão encerrada: loot somente leitura.'}
+        </span>
+        <span>{loading ? 'Atualizando…' : ''}</span>
+      </div>
+      <LootTable
+        view={view}
+        price={price}
+        toggleVoid={toggleVoid}
+        busy={busy}
+        closed={closed}
+        filtered={filtered}
+        loading={loading}
+      />
+    </>
+  );
+}
+
+function LootTable({
+  view,
+  price,
+  toggleVoid,
+  busy,
+  closed,
+  filtered,
+  loading,
+}: {
+  view: View;
+  price: (row: LootRow) => void;
+  toggleVoid: (row: LootRow) => void;
+  busy: boolean;
+  closed: boolean;
+  filtered: boolean;
+  loading: boolean;
+}) {
+  const totals = view.totals.session;
+  return (
+    <div className="table-scroll loot-table">
+      <table>
+        <caption className="visually-hidden">
+          Registro de loot da sessão {view.session.name}
+        </caption>
+        <thead>
+          <tr>
+            <th scope="col">Item</th>
+            <th scope="col">Tier</th>
+            <th scope="col">Qualidade</th>
+            <th scope="col" className="numeric">
+              Qtd.
+            </th>
+            <th scope="col" className="numeric">
+              Preço unit.
+            </th>
+            <th scope="col" className="col-player">
+              Jogador
+            </th>
+            <th scope="col">Origem</th>
+            <th scope="col">
+              <span className="visually-hidden">Ações</span>
+            </th>
+          </tr>
+        </thead>
+        <tbody>
+          {view.rows.map((row) => (
+            <LootRowView
+              key={`${row.event.source}:${row.event.id}`}
+              row={row}
+              price={price}
+              toggleVoid={toggleVoid}
+              busy={busy}
+              closed={closed}
+            />
+          ))}
+          {loading &&
+            !view.rows.length &&
+            [0, 1, 2].map((index) => (
+              <tr className="skeleton" key={index} aria-hidden>
+                {Array.from({ length: 8 }).map((_, cell) => (
+                  <td key={cell}>
+                    <div />
+                  </td>
+                ))}
+              </tr>
+            ))}
+        </tbody>
+        {view.rows.length > 0 && (
+          <tfoot>
+            <tr>
+              <td colSpan={3}>
+                {filtered ? 'Total filtrado' : 'Total da sessão'}{' '}
+                <small>(anulados não contam)</small>
+              </td>
+              <td className="numeric">{silver(totals.quantity)}</td>
+              <td className="numeric amount">
+                {silver(totals.estimated_silver)} s
+              </td>
+              <td colSpan={3}>
+                {totals.unpriced_events > 0 &&
+                  `${totals.unpriced_events} sem preço`}
+              </td>
+            </tr>
+          </tfoot>
+        )}
+      </table>
+      {!loading && !view.rows.length && (
+        <EmptyState
+          icon={<Boxes size={28} aria-hidden />}
+          title={
+            filtered
+              ? 'Nenhum loot corresponde aos filtros'
+              : 'Nenhum loot por aqui, ainda'
+          }
+        >
+          {filtered
+            ? 'Ajuste ou limpe os filtros para ver os registros.'
+            : 'Registre um loot ou gere uma simulação para testar.'}
+        </EmptyState>
+      )}
+    </div>
+  );
+}
+
+function LootRowView({
+  row,
   price,
   toggleVoid,
   busy,
   closed,
 }: {
-  rows: LootRow[];
+  row: LootRow;
   price: (row: LootRow) => void;
   toggleVoid: (row: LootRow) => void;
   busy: boolean;
   closed: boolean;
 }) {
+  const { event } = row;
+  const action = row.voided_at ? 'Restaurar' : 'Anular';
   return (
-    <div className="table-wrap">
-      <table>
-        <thead>
-          <tr>
-            <th>ITEM</th>
-            <th>JOGADOR</th>
-            <th>TIER / ENC.</th>
-            <th>QUALIDADE</th>
-            <th>QTD.</th>
-            <th>PREÇO UNIT.</th>
-            <th>HORÁRIO / ORIGEM</th>
-            <th />
-          </tr>
-        </thead>
-        <tbody>
-          {rows.map((row) => {
-            const { event } = row;
-            return (
-              <tr
-                key={`${event.source}:${event.id}`}
-                className={row.voided_at ? 'voided' : ''}
-              >
-                <td>
-                  <div className="item-cell">
-                    <ItemIcon item={event.item} quality={event.quality} />
-                    <div>
-                      <strong>{event.item.name}</strong>
-                      <small>{event.item.id}</small>
-                    </div>
-                  </div>
-                </td>
-                <td>
-                  <span className="avatar">{event.player.slice(0, 1)}</span>
-                  {event.player}
-                </td>
-                <td>
-                  <span className="tier">
-                    {event.item.tier ? `T${event.item.tier}` : 'Sem tier'}
-                  </span>
-                  <span
-                    className={`enchantment enchantment-${event.item.enchantment}`}
-                  >
-                    .{event.item.enchantment}
-                  </span>
-                </td>
-                <td className={event.quality === null ? 'unknown' : ''}>
-                  {qualityLabel(event.quality)}
-                </td>
-                <td className="numeric">{silver(event.quantity)}</td>
-                <td>
-                  <button
-                    className={`price-button ${row.price ? 'silver' : ''}`}
-                    disabled={busy}
-                    onClick={() => price(row)}
-                  >
-                    {row.price
-                      ? `${silver(row.price.unit_silver)} s`
-                      : '+ Definir preço'}
-                  </button>
-                  {row.price && (
-                    <small
-                      className="price-context"
-                      title={`${row.price.server} · ${row.price.city} · ${date(row.price.recorded_at)}`}
-                    >
-                      Manual · {row.price.city}
-                      <br />
-                      {date(row.price.recorded_at)}
-                    </small>
-                  )}
-                </td>
-                <td>
-                  <small>{date(event.occurred_at)}</small>
-                  <span
-                    className={`origin ${event.origin === 'simulated' ? 'simulated' : ''}`}
-                  >
-                    {event.origin === 'simulated'
-                      ? 'Simulado'
-                      : event.origin === 'manual'
-                        ? 'Manual'
-                        : 'Observado (declarado)'}
-                    {row.imported ? ' · Importado' : ''}
-                  </span>
-                  {row.voided_at && (
-                    <span className="origin voided-tag">
-                      Anulado · {date(row.voided_at)}
-                    </span>
-                  )}
-                </td>
-                <td>
-                  <button
-                    className="row-action"
-                    disabled={busy || closed}
-                    title={
-                      closed ? 'Reabra a sessão para alterar o loot' : undefined
-                    }
-                    onClick={() => toggleVoid(row)}
-                  >
-                    {row.voided_at ? 'Restaurar' : 'Anular'}
-                  </button>
+    <tr className={row.voided_at ? 'voided' : ''}>
+      <td>
+        <div className="item-cell">
+          <ItemIcon item={event.item} quality={event.quality} />
+          <div>
+            <strong>{event.item.name}</strong>
+            <small>{event.item.id}</small>
+            <small className="item-player">{event.player}</small>
+          </div>
+        </div>
+      </td>
+      <td>
+        <TierBadge item={event.item} />
+      </td>
+      <td>
+        <QualityMark quality={event.quality} />
+      </td>
+      <td className="numeric amount">{silver(event.quantity)}</td>
+      <td className="numeric">
+        {row.price ? (
+          <span className="price-set">
+            <button
+              disabled={busy}
+              aria-label={`Alterar preço de ${event.item.name}: ${silver(row.price.unit_silver)} silver`}
+              onClick={() => price(row)}
+            >
+              {silver(row.price.unit_silver)} s
+            </button>
+            <small
+              title={`Preço manual em ${row.price.city}, ${date(row.price.recorded_at)}`}
+            >
+              manual, {row.price.city}
+            </small>
+          </span>
+        ) : (
+          <button
+            className="price-button"
+            disabled={busy}
+            onClick={() => price(row)}
+          >
+            Definir preço
+          </button>
+        )}
+      </td>
+      <td className="col-player">{event.player}</td>
+      <td className="when">
+        <OriginTag origin={event.origin} imported={row.imported} />
+        <small>{date(event.occurred_at)}</small>
+        {row.voided_at && (
+          <span className="tag voided">
+            <Ban size={12} aria-hidden />
+            Anulado
+          </span>
+        )}
+      </td>
+      <td>
+        <button
+          className="ghost small"
+          disabled={busy || closed}
+          title={closed ? closedHint : undefined}
+          aria-label={`${action} ${event.item.name} de ${event.player}`}
+          onClick={() => toggleVoid(row)}
+        >
+          {row.voided_at ? (
+            <RotateCcw size={14} aria-hidden />
+          ) : (
+            <Ban size={14} aria-hidden />
+          )}
+          {action}
+        </button>
+      </td>
+    </tr>
+  );
+}
+
+export function PlayersView({ view }: { view: View }) {
+  const players = Object.entries(view.full_totals.players).sort(
+    ([, a], [, b]) => b.estimated_silver - a.estimated_silver,
+  );
+  return (
+    <>
+      <p className="page-intro">
+        Totais de loot por jogador nesta sessão, sem anulados. Os valores são
+        estimativas pelos preços manuais, não silver recebido.
+      </p>
+      <div className="table-scroll">
+        <table>
+          <caption className="visually-hidden">
+            Totais por jogador da sessão {view.session.name}
+          </caption>
+          <thead>
+            <tr>
+              <th scope="col">Jogador</th>
+              <th scope="col" className="numeric">
+                Registros
+              </th>
+              <th scope="col" className="numeric">
+                Itens
+              </th>
+              <th scope="col" className="numeric">
+                Sem preço
+              </th>
+              <th scope="col" className="numeric">
+                Valor estimado
+              </th>
+            </tr>
+          </thead>
+          <tbody>
+            {players.map(([player, total]) => (
+              <tr key={player}>
+                <th scope="row">{player}</th>
+                <td className="numeric">{total.events}</td>
+                <td className="numeric">{silver(total.quantity)}</td>
+                <td className="numeric">{total.unpriced_events}</td>
+                <td className="numeric amount">
+                  {silver(total.estimated_silver)} s
                 </td>
               </tr>
-            );
-          })}
-        </tbody>
-      </table>
-      {!rows.length && (
-        <div className="empty">
-          <Boxes size={32} />
-          <h3>Nenhum loot por aqui, ainda.</h3>
-          <p>Gere uma simulação, registre loot manual ou ajuste os filtros.</p>
-        </div>
-      )}
-    </div>
+            ))}
+          </tbody>
+        </table>
+        {!players.length && (
+          <EmptyState
+            icon={<Boxes size={28} aria-hidden />}
+            title="Nenhum jogador com loot"
+          >
+            Os totais aparecem aqui assim que houver loot válido na sessão.
+          </EmptyState>
+        )}
+      </div>
+    </>
   );
 }
 
@@ -194,7 +489,8 @@ export function ManualForm({
       <Field label="Buscar no catálogo">
         <input
           name="catalog-query"
-          placeholder="Nome ou ID, ex.: bolsa, T5_BAG@1"
+          type="search"
+          placeholder="Nome ou ID, por exemplo bolsa ou T5_BAG@1"
           maxLength={150}
           value={query}
           onChange={(event) => setQuery(event.target.value)}
@@ -213,31 +509,29 @@ export function ManualForm({
               role="option"
               key={item.id}
               aria-selected={item.id === selected}
-              className={item.id === selected ? 'selected' : ''}
               onClick={() => setSelected(item.id)}
             >
               <ItemIcon item={item} quality={null} />
               <span>
                 <strong>{item.name}</strong>
                 <small>
-                  {tierLabel(item.tier, item.enchantment)} · {item.id}
+                  {tierLabel(item.tier, item.enchantment)}, {item.id}
                 </small>
               </span>
             </button>
           ))}
+          {results === null && !searchError && (
+            <p className="help">Carregando catálogo…</p>
+          )}
+          {results?.length === 0 && (
+            <p className="help">Nenhum item corresponde à busca.</p>
+          )}
         </div>
+        <span className="help">
+          Mostra até 50 resultados; refine a busca para encontrar outros itens.
+        </span>
       </div>
-      {results === null && !searchError && (
-        <p className="help">Carregando catálogo…</p>
-      )}
-      {results?.length === 0 && (
-        <p className="help">Nenhum item corresponde à busca.</p>
-      )}
-      {searchError && (
-        <p role="alert" className="error">
-          {searchError}
-        </p>
-      )}
+      <InlineError message={searchError} />
       <div className="form-grid">
         <Field label="Qualidade">
           <select name="quality" defaultValue="1">
@@ -262,12 +556,13 @@ export function ManualForm({
         </Field>
       </div>
       <p className="help">
-        Origem manual. Horário registrado no momento do envio. Mostra até 50
-        resultados; refine a busca para encontrar outros itens.
+        Origem manual. O horário é registrado no momento em que você salvar.
       </p>
-      <button className="primary" disabled={busy || !selected}>
-        Registrar loot
-      </button>
+      <div className="form-actions">
+        <button className="primary" disabled={busy || !selected}>
+          Registrar loot
+        </button>
+      </div>
     </form>
   );
 }
@@ -291,9 +586,9 @@ export function ImportForm({
       }}
     >
       <p className="help">
-        Contratos v1 e v2: schema_version e events. Máximo 5 MB / 10.000
-        eventos. A origem é declarada pelo arquivo e não é certificada. O lote
-        inteiro é validado antes de salvar.
+        Formatos v1 e v2 (schema_version e events), até 5 MB e 10.000 eventos. A
+        origem é declarada pelo arquivo e não é certificada. O lote inteiro é
+        validado antes de salvar; replays idênticos são ignorados.
       </p>
       <Field label="ID da sessão de destino">
         <input
@@ -336,26 +631,23 @@ export function ImportForm({
       </Field>
       <Field label="Eventos normalizados">
         <textarea
-          rows={9}
+          rows={8}
           value={json}
           onChange={(event) => setJson(event.target.value)}
           required
           placeholder={'{"schema_version":2,"events":[…]}'}
         />
       </Field>
-      {error && (
-        <p role="alert" className="error">
-          {error}
-        </p>
-      )}
+      <InlineError message={error} />
       <p className="help">
-        session_id deve corresponder ao destino. Exports da mesma sessão podem
-        ser reimportados; preços, anulações e acertos não são restaurados por
-        esta importação.
+        O session_id dos eventos precisa ser o desta sessão. Preços, anulações e
+        acertos não são restaurados por esta importação.
       </p>
-      <button className="primary" disabled={busy || !json}>
-        Validar e importar
-      </button>
+      <div className="form-actions">
+        <button className="primary" disabled={busy || !json}>
+          Validar e importar
+        </button>
+      </div>
     </form>
   );
 }

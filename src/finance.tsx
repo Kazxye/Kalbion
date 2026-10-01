@@ -1,10 +1,11 @@
 import { useState, type FormEvent } from 'react';
-import { ArrowUpRight, CircleDollarSign, Plus } from 'lucide-react';
-import { Field } from './components';
+import { Divide, Plus, Scale, Undo2 } from 'lucide-react';
+import { EmptyState, Field, InlineError } from './components';
 import { date, ledgerKinds, silver } from './format';
 import type { Finance, Ledger, Share } from './types';
 
-export function LedgerPanel({
+/** Session-level settlements. The future consolidated Financeiro module is a separate page. */
+export function LedgerView({
   ledger,
   finance,
   busy,
@@ -21,42 +22,64 @@ export function LedgerPanel({
 }) {
   return (
     <>
-      <div className="ledger-summary">
-        <div>
-          <span>Receitas recebidas</span>
-          <strong>{silver(finance.income)} s</strong>
+      <p className="page-intro">
+        Silver efetivamente recebido e pago nesta sessão. Loot estimado não
+        entra no saldo. Erros são corrigidos por estorno, que fica no histórico.
+      </p>
+      <div className="ledger-head">
+        <dl aria-label="Saldo da sessão">
+          <div>
+            <dt>Receitas recebidas</dt>
+            <dd>{silver(finance.income)} s</dd>
+          </div>
+          <div>
+            <dt>Despesas e regear</dt>
+            <dd>{silver(finance.expenses)} s</dd>
+          </div>
+          <div>
+            <dt>Acertos pagos</dt>
+            <dd>{silver(finance.settlements)} s</dd>
+          </div>
+          <div>
+            <dt>Saldo disponível</dt>
+            <dd>{silver(finance.available)} s</dd>
+          </div>
+        </dl>
+        <div className="toolbar-actions">
+          <button disabled={busy} onClick={add}>
+            <Plus size={16} aria-hidden />
+            Novo lançamento
+          </button>
+          <button
+            className="primary"
+            disabled={busy || finance.available <= 0}
+            title={
+              finance.available <= 0
+                ? 'Sem saldo disponível para dividir'
+                : undefined
+            }
+            onClick={split}
+          >
+            <Divide size={16} aria-hidden />
+            Dividir saldo
+          </button>
         </div>
-        <div>
-          <span>Despesas e regear</span>
-          <strong>{silver(finance.expenses)} s</strong>
-        </div>
-        <div>
-          <span>Acertos pagos</span>
-          <strong>{silver(finance.settlements)} s</strong>
-        </div>
-        <button disabled={busy} onClick={add}>
-          <Plus size={15} />
-          Lançamento
-        </button>
-        <button
-          className="primary"
-          disabled={busy || finance.available <= 0}
-          onClick={split}
-        >
-          Dividir saldo
-          <ArrowUpRight size={15} />
-        </button>
       </div>
-      <div className="table-wrap">
+      <div className="table-scroll">
         <table>
+          <caption className="visually-hidden">Lançamentos da sessão</caption>
           <thead>
             <tr>
-              <th>Horário</th>
-              <th>Tipo</th>
-              <th>Jogador</th>
-              <th>Descrição</th>
-              <th>Silver</th>
-              <th />
+              <th scope="col">Horário</th>
+              <th scope="col">Tipo</th>
+              <th scope="col">Jogador</th>
+              <th scope="col">Descrição</th>
+              <th scope="col" className="numeric">
+                Silver
+              </th>
+              <th scope="col">
+                <span className="visually-hidden">Ações</span>
+              </th>
             </tr>
           </thead>
           <tbody>
@@ -64,23 +87,35 @@ export function LedgerPanel({
               <tr key={entry.id} className={entry.reversed_by ? 'voided' : ''}>
                 <td>{date(entry.occurred_at)}</td>
                 <td>
-                  <span className="pill">{ledgerKinds[entry.kind]}</span>
-                  {entry.reverses && <span className="pill">Estorno</span>}
-                  {entry.reversed_by && <span className="pill">Estornado</span>}
+                  {ledgerKinds[entry.kind]}
+                  {entry.reverses && (
+                    <span className="tag reversal">
+                      <Undo2 size={12} aria-hidden />
+                      Estorno
+                    </span>
+                  )}
+                  {entry.reversed_by && (
+                    <span className="tag reversed">
+                      <Undo2 size={12} aria-hidden />
+                      Estornado
+                    </span>
+                  )}
                 </td>
                 <td>{entry.player}</td>
                 <td>{entry.description}</td>
-                <td className="numeric">
+                <td className="numeric amount">
                   {entry.reverses ? '−' : ''}
                   {silver(entry.amount)}
                 </td>
                 <td>
                   {!entry.reverses && !entry.reversed_by && (
                     <button
-                      className="row-action"
+                      className="ghost small"
                       disabled={busy}
+                      aria-label={`Estornar ${entry.description}`}
                       onClick={() => reverse(entry)}
                     >
+                      <Undo2 size={14} aria-hidden />
                       Estornar
                     </button>
                   )}
@@ -90,14 +125,19 @@ export function LedgerPanel({
           </tbody>
         </table>
         {!ledger.length && (
-          <div className="empty">
-            <CircleDollarSign size={30} />
-            <h3>Nenhum lançamento financeiro</h3>
-            <p>
-              Registre vendas recebidas, despesas e regear. Loot estimado não
-              entra no saldo.
-            </p>
-          </div>
+          <EmptyState
+            icon={<Scale size={28} aria-hidden />}
+            title="Nenhum lançamento nesta sessão"
+            action={
+              <button disabled={busy} onClick={add}>
+                <Plus size={16} aria-hidden />
+                Novo lançamento
+              </button>
+            }
+          >
+            Registre vendas recebidas, despesas e regear para calcular o saldo e
+            dividir entre os participantes.
+          </EmptyState>
         )}
       </div>
     </>
@@ -129,38 +169,42 @@ export function LedgerForm({
         });
       }}
     >
-      <Field label="Tipo">
-        <select name="kind">
-          {Object.entries(ledgerKinds).map(([key, label]) => (
-            <option key={key} value={key}>
-              {label}
-            </option>
-          ))}
-        </select>
-      </Field>
-      <Field label="Jogador / responsável">
+      <div className="form-grid">
+        <Field label="Tipo">
+          <select name="kind">
+            {Object.entries(ledgerKinds).map(([key, label]) => (
+              <option key={key} value={key}>
+                {label}
+              </option>
+            ))}
+          </select>
+        </Field>
+        <Field label="Silver (valor efetivo)">
+          <input
+            name="amount"
+            type="number"
+            min="1"
+            max="1000000000000"
+            step="1"
+            required
+          />
+        </Field>
+      </div>
+      <Field label="Jogador ou responsável">
         <input name="player" required maxLength={64} />
       </Field>
       <Field label="Descrição">
         <input name="description" required maxLength={200} />
       </Field>
-      <Field label="Valor efetivo em silver">
-        <input
-          name="amount"
-          type="number"
-          min="1"
-          max="1000000000000"
-          step="1"
-          required
-        />
-      </Field>
       <p className="help">
-        Acerto pago reduz o saldo do caixa da sessão. Registre apenas valores
-        efetivamente recebidos ou pagos. Erros são corrigidos por estorno.
+        Acerto pago reduz o saldo da sessão. Registre apenas valores realmente
+        recebidos ou pagos.
       </p>
-      <button className="primary" disabled={busy}>
-        Registrar lançamento
-      </button>
+      <div className="form-actions">
+        <button className="primary" disabled={busy}>
+          Registrar lançamento
+        </button>
+      </div>
     </form>
   );
 }
@@ -202,7 +246,7 @@ export function SplitForm({
   }
   return (
     <form onSubmit={calculate}>
-      <Field label={`Saldo a dividir (disponível: ${silver(available)} s)`}>
+      <Field label={`Silver a dividir (disponível: ${silver(available)} s)`}>
         <input
           disabled={pending}
           type="number"
@@ -230,20 +274,20 @@ export function SplitForm({
         />
       </Field>
       <p className="help">
-        Divisão em silver inteiro. O resto é distribuído em ordem alfabética.
-        Confirmar registra pagamentos efetivos aos participantes.
+        Divisão em silver inteiro; o resto vai um silver por vez, em ordem
+        alfabética. Confirmar registra um acerto pago para cada participante.
       </p>
-      {error && (
-        <p role="alert" className="error">
-          {error}
-        </p>
-      )}
-      {shares.map((share) => (
-        <div className="share" key={share.player}>
-          <span>{share.player}</span>
-          <strong>{silver(share.silver)} s</strong>
+      <InlineError message={error} />
+      {shares.length > 0 && (
+        <div aria-label="Prévia da divisão">
+          {shares.map((share) => (
+            <div className="share" key={share.player}>
+              <span>{share.player}</span>
+              <strong>{silver(share.silver)} s</strong>
+            </div>
+          ))}
         </div>
-      ))}
+      )}
       <div className="form-actions">
         <button disabled={busy || pending}>Calcular divisão</button>
         {!!shares.length && (

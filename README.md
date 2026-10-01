@@ -37,6 +37,10 @@ npm run tauri build -- --bundles nsis   # instalador em target\release\bundle\ns
 
 Windows e instaladores **ainda não foram validados**; não há assinatura de código.
 
+## Interface
+
+Tokens de cor, tipografia, espaçamento e estados ficam no topo de `src/styles.css`. Fontes embutidas (sem download em tempo de execução): Source Sans 3 para a interface, com números tabulares, e Alegreya para o nome da sessão e títulos, ambas OFL-1.1 via `@fontsource-variable`. Tier, encantamento, qualidade, origem, anulação e estado da sessão sempre têm texto ou forma além da cor. Janela mínima 1000×700; abaixo de 1280 px de largura a coluna Jogador passa para dentro da célula do item.
+
 ## Catálogo de itens
 
 O Kalbion não distribui dados do jogo. Sem importação, existe só um catálogo demonstrativo de sete itens. Para o catálogo completo, baixe `formatted/items.json` de [ao-data/ao-bin-dumps](https://github.com/ao-data/ao-bin-dumps) e use **Configurações → Importar items.json**. O arquivo é escolhido pelo diálogo nativo; a importação é atômica, guarda nome do arquivo, data e contagem, e substitui o catálogo anterior. Loot já registrado mantém o nome com que foi salvo.

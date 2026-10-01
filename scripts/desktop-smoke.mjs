@@ -17,22 +17,25 @@ async function call(method, route, body) {
 }
 const execute = (script, args = []) =>
   call('POST', `/session/${session}/execute/sync`, { script, args });
+let step = 'start';
 async function until(check) {
   for (let attempt = 0; attempt < 50; attempt++) {
     if (await check()) return;
     await new Promise((resolve) => setTimeout(resolve, 100));
   }
-  throw new Error('Timed out waiting for UI');
+  throw new Error(`Timed out waiting for UI after step: ${step}`);
 }
 async function click(label) {
+  step = `click ${label}`;
   await until(() =>
     execute(
-      `const button = [...document.querySelectorAll('button')].find(button => button.textContent.trim() === arguments[0]); if (!button || button.disabled) return false; button.click(); return true;`,
+      `const scope = document.querySelector('[role="dialog"]') ?? document.querySelector('[role="menu"]') ?? document; const label = (button) => [...button.childNodes].filter((node) => !node.classList?.contains('count')).map((node) => node.textContent).join('').trim(); const button = [...scope.querySelectorAll('button')].find((button) => label(button) === arguments[0]); if (!button || button.disabled) return false; button.click(); return true;`,
       [label],
     ),
   );
 }
 async function input(selector, value) {
+  step = `input ${selector}`;
   const element = await call('POST', `/session/${session}/element`, {
     using: 'css selector',
     value: selector,
@@ -43,6 +46,21 @@ async function input(selector, value) {
     text: value,
   });
   // WebKit can return before queued keyboard events reach the input.
+  await until(
+    async () =>
+      (await execute(`return document.querySelector(arguments[0]).value`, [
+        selector,
+      ])) === value,
+  );
+}
+// Typing several KB key by key makes WebKitWebDriver drop the connection intermittently
+// (app stays alive). Large payloads are pasted: native setter plus the input event React uses.
+async function paste(selector, value) {
+  step = `paste ${selector}`;
+  await execute(
+    `const element = document.querySelector(arguments[0]); Object.getOwnPropertyDescriptor(Object.getPrototypeOf(element), 'value').set.call(element, arguments[1]); element.dispatchEvent(new Event('input', { bubbles: true }));`,
+    [selector, value],
+  );
   await until(
     async () =>
       (await execute(`return document.querySelector(arguments[0]).value`, [
@@ -119,9 +137,9 @@ try {
   );
   assert.ok(selected);
   const sessionId = selected.id;
-  await click('+ Definir preço');
+  await click('Definir preço');
   await input('input[name="amount"]', '100');
-  await click('Salvar estimativa');
+  await click('Salvar preço');
   await until(() =>
     execute(`return !document.querySelector('[role="dialog"]')`),
   );
@@ -130,7 +148,7 @@ try {
     execute(`return document.querySelectorAll('tbody tr').length === 3`),
   );
   await click('Acertos da sessão');
-  await click('Lançamento');
+  await click('Novo lançamento');
   await input('input[name="player"]', 'Kazz');
   await input('input[name="description"]', 'Venda confirmada');
   await input('input[name="amount"]', '1001');
@@ -162,6 +180,21 @@ try {
   assert.equal(view.finance.income, 1001);
   assert.equal(view.finance.available, 0);
   assert.equal(view.finance.settlements, 1001);
+  await click('Estornar');
+  await click('Registrar estorno');
+  await until(() =>
+    execute(
+      `return !document.querySelector('[role="dialog"]') && document.body.textContent.includes('Estornado')`,
+    ),
+  );
+  const reversed = await ipc({
+    operation: 'view',
+    session_id: sessionId,
+    filter: {},
+  });
+  assert.equal(reversed.ledger.length, 5);
+  assert.equal(reversed.finance.settlements, 668);
+  assert.equal(reversed.finance.available, 333);
   const replay = await ipc({
     operation: 'import',
     session_id: sessionId,
@@ -171,8 +204,7 @@ try {
     }),
   });
   assert.equal(replay.duplicates, 7);
-  await click('Loot e sessões');
-  await execute(`document.querySelector('.tabs button').click()`);
+  await click('Loot');
   await until(() =>
     execute(`return document.querySelectorAll('tbody tr').length === 7`),
   );
@@ -183,18 +215,17 @@ try {
   await input('input[aria-label="Filtrar jogador"]', 'Nobody');
   await until(() =>
     execute(
-      `return document.body.textContent.includes('Nenhum loot por aqui')`,
+      `return document.body.textContent.includes('Nenhum loot corresponde aos filtros')`,
     ),
   );
-  await execute(
-    `document.querySelector('button[title="Limpar filtros"]').click()`,
-  );
+  await click('Limpar filtros');
   await until(() =>
     execute(`return document.querySelectorAll('tbody tr').length === 7`),
   );
   await capture('/tmp/kalbion-desktop.png');
-  await execute(`document.querySelector('.panel').scrollIntoView()`);
+  await execute(`document.querySelector('.loot-table').scrollIntoView()`);
   await capture('/tmp/kalbion-desktop-table.png');
+  await click('Ações da sessão');
   await click('Importar JSON');
   await input('textarea', '{"schema_version":99,"events":[]}');
   await click('Validar e importar');
@@ -203,7 +234,7 @@ try {
       `return document.querySelector('[role="dialog"] [role="alert"]')?.textContent.includes('Versão incompatível')`,
     ),
   );
-  await input(
+  await paste(
     'textarea',
     JSON.stringify({
       schema_version: 2,
@@ -216,7 +247,7 @@ try {
       `return !document.querySelector('[role="dialog"]') && document.body.textContent.includes('7 duplicados ignorados')`,
     ),
   );
-  await click('Loot manual');
+  await click('Registrar loot');
   await input('input[name="player"]', 'ManualTester');
   await click('Registrar loot');
   await until(() =>
@@ -238,12 +269,44 @@ try {
   });
   assert.equal(afterVoid.rows.length, 8);
   assert.equal(afterVoid.full_totals.session.events, 7);
+  await click('Restaurar');
+  await click('Restaurar registro');
+  await until(() =>
+    execute(
+      `return !document.querySelector('[role="dialog"]') && !document.body.textContent.includes('Anulado')`,
+    ),
+  );
+  assert.equal(
+    (await ipc({ operation: 'view', session_id: sessionId, filter: {} }))
+      .full_totals.session.events,
+    8,
+  );
+  // Switch to a second session and back through the header selector.
+  await click('Nova sessão');
+  await input('input[name="name"]', 'Second session');
+  await click('Criar sessão');
+  await until(() =>
+    execute(
+      `return document.querySelector('#session-select').selectedOptions[0]?.textContent === 'Second session' && document.body.textContent.includes('Nenhum loot por aqui')`,
+    ),
+  );
+  await execute(
+    `const select = document.querySelector('#session-select'); select.value = arguments[0]; select.dispatchEvent(new Event('change', { bubbles: true }));`,
+    [sessionId],
+  );
+  await until(() =>
+    execute(
+      `return document.querySelectorAll('.loot-table tbody tr').length === 8`,
+    ),
+  );
+  await click('Ações da sessão');
   await click('Encerrar sessão');
   await until(() =>
     execute(
       `return [...document.querySelectorAll('button')].some(button => button.textContent.trim() === 'Gerar simulação' && button.disabled)`,
     ),
   );
+  await click('Ações da sessão');
   await click('Reabrir sessão');
   await until(() =>
     execute(
@@ -273,8 +336,8 @@ try {
     filter: {},
   });
   assert.equal(recovered.rows.length, 8);
-  assert.equal(recovered.full_totals.session.events, 7);
-  assert.equal(recovered.finance.settlements, 1001);
+  assert.equal(recovered.full_totals.session.events, 8);
+  assert.equal(recovered.finance.settlements, 668);
   assert.equal(
     recovered.rows.filter((row) => row.price).length,
     beforeRestart.rows.filter((row) => row.price).length,
@@ -284,8 +347,11 @@ try {
     'Martlock',
   );
   console.log(
-    'PASS: desktop UI, real IPC, simulation, manual loot, catalog search, item icons, void, import validation/replay, prices, player totals, ledger, split, filters, empty/error states, session close/reopen, settings, disabled licensing, persistence after process restart.',
+    'PASS: desktop UI, real IPC, simulation, manual loot, catalog search, item icons, void/restore, ledger reversal, session switching, import validation/replay, prices, player totals, ledger, split, filters, empty/error states, session close/reopen, settings, disabled licensing, persistence after process restart.',
   );
+} catch (error) {
+  console.error(`FAILED at step: ${step}`);
+  throw error;
 } finally {
-  if (session) await call('DELETE', `/session/${session}`);
+  if (session) await call('DELETE', `/session/${session}`).catch(() => {});
 }

@@ -11,6 +11,8 @@
     "test:core": "cargo test --manifest-path crates/kalbion-core/Cargo.toml"
   },
   "dependencies": {
+    "@fontsource-variable/alegreya": "^5.3.0",
+    "@fontsource-variable/source-sans-3": "^5.3.0",
     "@tauri-apps/api": "^2.0.0",
     "lucide-react": "^0.468.0",
     "react": "^19.0.0",
