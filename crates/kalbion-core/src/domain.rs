@@ -106,10 +106,22 @@ impl Item {
         }
     }
 }
-/// Gathered resources, including enchanted ones (`T5_HIDE_LEVEL1@1`), exist in one quality
-/// only. Kalbion stores them without quality ("não se aplica"); the Albion Data Project lists
-/// them under quality 1.
-const SINGLE_QUALITY: [&str; 5] = ["WOOD", "ORE", "HIDE", "FIBER", "ROCK"];
+/// Raw and refined resources, including enchanted ones (`T5_HIDE_LEVEL1@1`,
+/// `T6_PLANKS_LEVEL2@2`), exist in one quality only. Kalbion stores them without quality
+/// ("não se aplica"); the Albion Data Project lists them under quality 1. The whole part
+/// after the tier must match, so equipment such as `T4_ARMOR_LEATHER_SET1` keeps its quality.
+const SINGLE_QUALITY: [&str; 10] = [
+    "WOOD",
+    "ORE",
+    "HIDE",
+    "FIBER",
+    "ROCK",
+    "PLANKS",
+    "METALBAR",
+    "LEATHER",
+    "CLOTH",
+    "STONEBLOCK",
+];
 pub const MARKET_QUALITY_OF_SINGLE_QUALITY_ITEMS: u8 = 1;
 pub fn has_quality(id: &str) -> bool {
     let base = id.split_once('@').map_or(id, |(base, _)| base);

@@ -544,3 +544,113 @@ fn version_one_database_is_migrated_with_backup_and_old_exports_still_replay() {
     drop(store);
     assert!(Store::open(&path).is_ok());
 }
+
+/// A development database already at version 3 (before resources lost their quality) must
+/// still be normalized: version 4 runs on it, with a backup, and old exports keep replaying.
+#[test]
+fn version_three_database_moves_resources_to_no_quality() {
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("kalbion.db");
+    {
+        let connection = rusqlite::Connection::open(&path).unwrap();
+        connection
+            .execute_batch(include_str!("../migrations/001_initial.sql"))
+            .unwrap();
+        connection
+            .execute_batch(include_str!("../migrations/002_structured.sql"))
+            .unwrap();
+        connection
+            .execute_batch(
+                "DROP TABLE events; DROP TABLE prices; DROP TABLE ledger; DROP TABLE settings;",
+            )
+            .unwrap();
+        connection
+            .execute_batch(include_str!("../migrations/003_market_prices.sql"))
+            .unwrap();
+        connection.pragma_update(None, "user_version", 3).unwrap();
+        connection
+            .execute_batch(
+                "INSERT INTO sessions VALUES ('s3', 'Dev', '2026-10-01T10:00:00.000000Z', NULL, 'americas', 'Martlock');
+                 INSERT INTO loot_events VALUES
+                   ('kalbion.manual.v1', 'planks', 's3', 'manual', 0, '2026-10-01T10:01:00.000000Z', 'Ana', 'T5_PLANKS_LEVEL1@1', 'Tábuas', 5, 1, 1, 20, NULL),
+                   ('kalbion.manual.v1', 'bar', 's3', 'manual', 0, '2026-10-01T10:02:00.000000Z', 'Ana', 'T6_METALBAR', 'Barras', 6, 0, 3, 5, NULL),
+                   ('kalbion.manual.v1', 'bag', 's3', 'manual', 0, '2026-10-01T10:03:00.000000Z', 'Ana', 'T4_BAG', 'Bolsa', 4, 0, 3, 1, NULL),
+                   ('kalbion.manual.v1', 'armor', 's3', 'manual', 0, '2026-10-01T10:04:00.000000Z', 'Ana', 'T4_ARMOR_LEATHER_SET1', 'Jaqueta', 4, 0, 2, 1, NULL);
+                 INSERT INTO item_prices VALUES
+                   ('s3', 'T5_PLANKS_LEVEL1@1', 1, 40, 'manual', 'americas', 'Martlock', '2026-10-01T10:05:00.000000Z', NULL),
+                   ('s3', 'T6_METALBAR', 3, 70, 'manual', 'americas', 'Martlock', '2026-10-01T10:05:00.000000Z', NULL),
+                   ('s3', 'T6_METALBAR', 0, 60, 'manual', 'americas', 'Martlock', '2026-10-01T10:06:00.000000Z', NULL),
+                   ('s3', 'T4_BAG', 3, 900, 'albion_data', 'americas', 'Martlock', '2026-10-01T10:07:00.000000Z', '2026-10-01T09:00:00.000000Z'),
+                   ('s3', 'T4_ARMOR_LEATHER_SET1', 2, 300, 'manual', 'americas', 'Martlock', '2026-10-01T10:07:00.000000Z', NULL);",
+            )
+            .unwrap();
+    }
+    let mut store = Store::open(&path).unwrap();
+    let names: Vec<String> = std::fs::read_dir(directory.path())
+        .unwrap()
+        .filter_map(|entry| entry.ok())
+        .map(|entry| entry.file_name().to_string_lossy().into_owned())
+        .collect();
+    assert_eq!(
+        names
+            .iter()
+            .filter(|name| name.starts_with("kalbion-v3-backup-"))
+            .count(),
+        1
+    );
+    let view = store.view("s3", &Filter::default()).unwrap();
+    let row = |id: &str| view.rows.iter().find(|row| row.event.id == id).unwrap();
+    assert_eq!(row("planks").event.quality, None);
+    assert_eq!(row("planks").price.as_ref().unwrap().unit_silver, 40);
+    assert_eq!(row("bar").event.quality, None);
+    // Two prices for the same resource: the most recent one wins.
+    assert_eq!(row("bar").price.as_ref().unwrap().unit_silver, 60);
+    // Equipment keeps its quality and its prices, market prices included.
+    assert_eq!(row("bag").event.quality, Some(3));
+    assert_eq!(
+        row("bag").price.as_ref().unwrap().source,
+        PriceSource::AlbionData
+    );
+    assert_eq!(row("armor").event.quality, Some(2));
+    assert_eq!(row("armor").price.as_ref().unwrap().unit_silver, 300);
+    assert_eq!(
+        view.totals.session.estimated_silver,
+        20 * 40 + 5 * 60 + 900 + 300
+    );
+    // An export made by the version 3 build said quality 1 and 3 for these resources.
+    let old_export = json!([
+        { "id": "planks", "source": "kalbion.manual.v1", "origin": "manual", "session_id": "s3",
+          "occurred_at": "2026-10-01T10:01:00Z", "player": "Ana",
+          "item": { "id": "T5_PLANKS_LEVEL1@1", "name": "Tábuas", "tier": 5, "enchantment": 1 },
+          "quality": 1, "quantity": 20 },
+        { "id": "bar", "source": "kalbion.manual.v1", "origin": "manual", "session_id": "s3",
+          "occurred_at": "2026-10-01T10:02:00Z", "player": "Ana",
+          "item": { "id": "T6_METALBAR", "name": "Barras", "tier": 6, "enchantment": 0 },
+          "quality": 3, "quantity": 5 }
+    ]);
+    let result = store.import("s3", &import_file(2, old_export)).unwrap();
+    assert_eq!((result.inserted, result.duplicates), (0, 2));
+    // Only the market-priced bag is refreshed; manual prices (resources included) prevail.
+    let plan = store.market_plan("s3").unwrap();
+    assert_eq!(plan.wanted, [("T4_BAG".to_string(), 3)]);
+    drop(store);
+    let connection = rusqlite::Connection::open(&path).unwrap();
+    let version: u32 = connection
+        .query_row("PRAGMA user_version", [], |row| row.get(0))
+        .unwrap();
+    assert_eq!(version, 4);
+    connection
+        .execute(
+            "INSERT INTO item_prices VALUES ('s3', 'T4_WOOD', 0, 5, 'albion_data', 'americas',
+             'Martlock', '2026-10-01T11:00:00.000000Z', '2026-10-01T10:00:00.000000Z')",
+            [],
+        )
+        .unwrap();
+    assert!(connection
+        .execute(
+            "INSERT INTO item_prices VALUES ('s3', 'T4_ORE', 0, 5, 'albion_data', 'americas',
+             'Martlock', '2026-10-01T11:00:00.000000Z', NULL)",
+            [],
+        )
+        .is_err());
+}

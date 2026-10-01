@@ -4,7 +4,7 @@ use rusqlite::{params, Connection, OptionalExtension, Transaction};
 use serde::Deserialize;
 use std::path::Path;
 
-pub const LATEST: u32 = 3;
+pub const LATEST: u32 = 4;
 
 /// Applies pending migrations, one transaction per version. Before upgrading an existing
 /// database file, a consistent copy is written next to it so a failed or unwanted upgrade
@@ -24,7 +24,8 @@ pub fn run(connection: &mut Connection, path: &Path) -> Result<()> {
         match target {
             1 => transaction.execute_batch(include_str!("../migrations/001_initial.sql"))?,
             2 => to_v2(&transaction)?,
-            3 => to_v3(&transaction)?,
+            3 => transaction.execute_batch(include_str!("../migrations/003_market_prices.sql"))?,
+            4 => to_v4(&transaction)?,
             _ => unreachable!("every version up to LATEST has a migration"),
         }
         transaction.pragma_update(None, "user_version", target)?;
@@ -100,8 +101,10 @@ struct V1Ledger {
 /// Resources have no quality. Older versions stored whatever was entered (the manual form
 /// defaulted to Normal), so their loot moves to "no quality" and so do their prices; when a
 /// session priced the same resource under several qualities, the most recent price wins.
-fn to_v3(transaction: &Transaction) -> Result<()> {
-    transaction.execute_batch(include_str!("../migrations/003_market_prices.sql"))?;
+fn to_v4(transaction: &Transaction) -> Result<()> {
+    transaction.execute_batch(include_str!(
+        "../migrations/004_resources_without_quality.sql"
+    ))?;
     let resources: Vec<String> = {
         let mut select = transaction.prepare(
             "SELECT DISTINCT item_id FROM loot_events WHERE quality IS NOT NULL

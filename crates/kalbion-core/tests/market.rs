@@ -335,23 +335,49 @@ fn market_quotes_cannot_overflow_totals_or_change_another_market() {
 }
 
 /// Contacts the real service over HTTPS: `cargo test -p kalbion-core --test market -- --ignored`.
+/// Besides connectivity, it requires real quotes for a raw and a refined resource (asked as
+/// quality 1) and checks that they end up as the session's prices.
 #[test]
 #[ignore]
-fn live_service_answers_for_every_server() {
+fn live_service_prices_raw_and_refined_resources() {
     let market = AlbionDataProject::default();
     for server in SERVERS {
         let quotes = market
-            .quotes(
-                server,
-                "Bridgewatch",
-                &pairs(&[("T4_BAG", 1), ("T5_HIDE_LEVEL1@1", 1)]),
-            )
+            .quotes(server, "Bridgewatch", &pairs(&[("T4_BAG", 1)]))
             .unwrap();
-        // The market may have no orders right now; whatever comes back must be sane.
         for quote in quotes {
             assert!(quote.unit_silver > 0);
             assert!(quote.observed_at.ends_with('Z'));
         }
+    }
+    let mut store = Store::open(":memory:").unwrap();
+    let session = store.create_session("Live").unwrap();
+    let file = json!({ "schema_version": 2, "events": [
+        { "id": "wood", "source": "live.test", "origin": "manual", "session_id": session.id,
+          "occurred_at": "2026-10-01T12:00:00Z", "player": "Ana",
+          "item": { "id": "T4_WOOD", "name": "Wood" }, "quality": null, "quantity": 10 },
+        { "id": "planks", "source": "live.test", "origin": "manual", "session_id": session.id,
+          "occurred_at": "2026-10-01T12:00:00Z", "player": "Ana",
+          "item": { "id": "T4_PLANKS", "name": "Planks" }, "quality": null, "quantity": 10 }
+    ]});
+    store.import(&session.id, &file.to_string()).unwrap();
+    let plan = store.market_plan(&session.id).unwrap();
+    assert_eq!(plan.wanted, pairs(&[("T4_PLANKS", 1), ("T4_WOOD", 1)]));
+    let quotes = market
+        .quotes(&plan.server, &plan.city, &plan.wanted)
+        .unwrap();
+    let result = store
+        .apply_market_quotes(&session.id, &plan, &quotes)
+        .unwrap();
+    assert_eq!(
+        result.updated, 2,
+        "both resources should have offers: {quotes:?}"
+    );
+    for row in store.rows(&session.id, &Filter::default()).unwrap() {
+        let price = row.price.unwrap();
+        assert_eq!(price.source, PriceSource::AlbionData);
+        assert!(price.unit_silver > 0);
+        assert_eq!(row.event.quality, None);
     }
 }
 
@@ -455,9 +481,21 @@ fn resources_have_no_quality_and_are_quoted_as_quality_one() {
         ("T5_HIDE_LEVEL1@1", false),
         ("T8_FIBER_LEVEL3@3", false),
         ("T4_ROCK", false),
+        ("T4_PLANKS", false),
+        ("T5_PLANKS_LEVEL1@1", false),
+        ("T6_METALBAR_LEVEL2@2", false),
+        ("T5_LEATHER_LEVEL1@1", false),
+        ("T4_CLOTH_LEVEL3@3", false),
+        ("T5_STONEBLOCK", false),
         ("T4_BAG", true),
-        ("T4_PLANKS", true),
         ("T6_MAIN_SWORD@2", true),
+        // Equipment and other items named after a resource keep their quality.
+        ("T4_ARMOR_LEATHER_SET1", true),
+        ("T5_HEAD_CLOTH_SET2@1", true),
+        ("T6_2H_ROCKSTAFF_KEEPER", true),
+        ("T4_BACKPACK_GATHERER_ORE", true),
+        ("T4_JOURNAL_WOOD_FULL", true),
+        ("T5_PLANKS_LEVELX", true),
         ("UNIQUE_HIDEOUT", true),
         ("TREASURE_ORE", true),
     ] {

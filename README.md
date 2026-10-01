@@ -64,7 +64,7 @@ Os ícones vêm do serviço oficial de renderização da SBI (`render.albiononli
 
 - **Item:** identificado pelo `UniqueName` do Albion (`T5_BAG@1`). Tier e enchantment são derivados do ID; itens como `UNIQUE_HIDEOUT` não têm tier.
 - **Quality:** pertence ao loot, não ao item. `null` significa “não informada pela fonte” e nunca é preenchida por suposição. Preços de quality desconhecida são separados das conhecidas.
-- **Recursos sem quality:** madeira, minério, pelego, fibra e pedra (`WOOD`, `ORE`, `HIDE`, `FIBER`, `ROCK`, inclusive encantados como `T5_HIDE_LEVEL1@1`) existem numa única quality e aparecem como **Não se aplica**. Qualquer quality informada para eles (o jogo diz 1; arquivos v1 exigiam um valor) é descartada ao gravar, não rejeitada. Tier e enchantment continuam derivados do ID. Itens refinados (`PLANKS`, `METALBAR` etc.) ainda não entram nessa regra.
+- **Recursos sem quality:** brutos (`WOOD`, `ORE`, `HIDE`, `FIBER`, `ROCK`) e refinados (`PLANKS`, `METALBAR`, `LEATHER`, `CLOTH`, `STONEBLOCK`), inclusive encantados como `T5_HIDE_LEVEL1@1` e `T6_METALBAR_LEVEL2@2`, existem numa única quality e aparecem como **Não se aplica**. A parte do ID depois do tier precisa ser exatamente o recurso, então equipamentos como `T4_ARMOR_LEATHER_SET1` mantêm quality; conferido contra os 12.237 itens do `items.json` (245 recursos, nenhum equipamento). Qualquer quality informada para recursos (o jogo diz 1; arquivos v1 exigiam um valor) é descartada ao gravar, não rejeitada. Tier e enchantment continuam derivados do ID.
 - **Origem:** `simulated`, `manual` ou `observed`. Importados recebem a marca `imported`; `observed` importado é declaração do arquivo, não autenticidade verificada.
 - **Deduplicação:** identidade única `(source, id)`. Replay idêntico é ignorado; mesma identidade com conteúdo diferente rejeita o lote inteiro; loots iguais com IDs diferentes são mantidos. Conteúdo e janelas de tempo nunca são usados para adivinhar identidade. Horários são normalizados para UTC antes da comparação.
 - **Correções:** loot é **anulado** (continua no histórico, na exportação e na deduplicação, mas sai dos totais; pode ser restaurado). O ledger só recebe acréscimos: erros são corrigidos por **estorno**, que fica visível ao lado do original.
@@ -95,7 +95,7 @@ Os ícones vêm do serviço oficial de renderização da SBI (`render.albiononli
 
 - Banco: `~/.local/share/io.kalbion.desktop/kalbion.db` (Linux) ou `%APPDATA%\io.kalbion.desktop\kalbion.db` (Windows).
 - Log JSON: subpasta `logs/kalbion.log` do mesmo diretório no Linux; no Windows, o caminho aparece em **Configurações**. Rotaciona ao atingir 5 MB, inclusive durante o uso (mantém `kalbion.log.1`); falha de gravação aparece em Configurações. Sem senhas, chaves, tokens ou payloads importados.
-- Migrations rodam ao abrir o banco, uma transação por versão. Antes de atualizar um banco existente, uma cópia consistente é gravada ao lado (`kalbion-v<versão anterior>-backup-<data>.db`). Bancos de versões futuras são recusados. A versão 3 também move loot e preços de recursos antigos para “sem quality” (havendo preços em várias qualities, vale o mais recente), para que exports antigos continuem sendo reconhecidos como duplicados.
+- Migrations rodam ao abrir o banco, uma transação por versão. Antes de atualizar um banco existente, uma cópia consistente é gravada ao lado (`kalbion-v<versão anterior>-backup-<data>.db`). Bancos de versões futuras são recusados. A versão 4 move loot e preços de recursos antigos para “sem quality” (havendo preços em várias qualities, vale o mais recente), para que exports antigos continuem sendo reconhecidos como duplicados; ela roda também em bancos que já estavam na versão 3.
 - Backup manual: fechar o app e copiar o diretório inteiro, incluindo arquivos `-wal`/`-shm` se existirem.
 
 ## Licenciamento (KeyAuth)
@@ -115,7 +115,7 @@ Política: sem validação offline inventada; indisponibilidade é estado distin
 ```bash
 npm run build                                       # typecheck + Vite
 cargo test --workspace
-cargo test -p kalbion-core --test market -- --ignored   # opcional: consulta o ADP real
+cargo test -p kalbion-core --test market -- --ignored   # opcional: ADP real; exige cotação de madeira e tábuas
 cargo clippy --workspace --all-targets -- -D warnings
 cargo fmt --all -- --check
 npx prettier --check src scripts
