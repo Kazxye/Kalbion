@@ -809,6 +809,9 @@ tr.voided .item-icon {
 .quality.unknown .pips i {
   border-style: dashed;
 }
+.quality.not-applicable {
+  color: var(--faint);
+}
 
 /* Menu */
 .menu {

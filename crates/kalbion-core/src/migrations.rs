@@ -1,4 +1,4 @@
-use crate::domain::{normalize_timestamp, LedgerKind, Origin};
+use crate::domain::{has_quality, normalize_timestamp, LedgerKind, Origin};
 use crate::error::{invalid, Result};
 use rusqlite::{params, Connection, OptionalExtension, Transaction};
 use serde::Deserialize;
@@ -24,7 +24,7 @@ pub fn run(connection: &mut Connection, path: &Path) -> Result<()> {
         match target {
             1 => transaction.execute_batch(include_str!("../migrations/001_initial.sql"))?,
             2 => to_v2(&transaction)?,
-            3 => transaction.execute_batch(include_str!("../migrations/003_market_prices.sql"))?,
+            3 => to_v3(&transaction)?,
             _ => unreachable!("every version up to LATEST has a migration"),
         }
         transaction.pragma_update(None, "user_version", target)?;
@@ -95,6 +95,43 @@ struct V1Ledger {
     description: String,
     amount: i64,
     occurred_at: String,
+}
+
+/// Resources have no quality. Older versions stored whatever was entered (the manual form
+/// defaulted to Normal), so their loot moves to "no quality" and so do their prices; when a
+/// session priced the same resource under several qualities, the most recent price wins.
+fn to_v3(transaction: &Transaction) -> Result<()> {
+    transaction.execute_batch(include_str!("../migrations/003_market_prices.sql"))?;
+    let resources: Vec<String> = {
+        let mut select = transaction.prepare(
+            "SELECT DISTINCT item_id FROM loot_events WHERE quality IS NOT NULL
+             UNION SELECT DISTINCT item_id FROM item_prices WHERE quality > 0",
+        )?;
+        let rows = select.query_map([], |row| row.get::<_, String>(0))?;
+        rows.collect::<rusqlite::Result<Vec<_>>>()?
+            .into_iter()
+            .filter(|item_id| !has_quality(item_id))
+            .collect()
+    };
+    for item_id in &resources {
+        transaction.execute(
+            "UPDATE loot_events SET quality = NULL WHERE item_id = ?1",
+            [item_id],
+        )?;
+        transaction.execute(
+            "DELETE FROM item_prices WHERE item_id = ?1 AND rowid NOT IN (
+               SELECT rowid FROM item_prices p WHERE p.item_id = ?1
+               AND p.recorded_at = (SELECT MAX(recorded_at) FROM item_prices q
+                 WHERE q.item_id = ?1 AND q.session_id = p.session_id)
+               GROUP BY p.session_id)",
+            [item_id],
+        )?;
+        transaction.execute(
+            "UPDATE item_prices SET quality = 0 WHERE item_id = ?1",
+            [item_id],
+        )?;
+    }
+    Ok(())
 }
 
 fn to_v2(transaction: &Transaction) -> Result<()> {

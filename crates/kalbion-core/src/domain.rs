@@ -72,13 +72,15 @@ impl Origin {
 
 /// An item type identified by its Albion UniqueName (e.g. `T5_BAG@1`).
 /// Tier and enchantment are derived from the name, so they cannot disagree with it.
-/// Quality belongs to a looted instance, not to the item type.
+/// Quality belongs to a looted instance, not to the item type; some item types have none.
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
 pub struct Item {
     pub id: String,
     pub name: String,
     pub tier: Option<u8>,
     pub enchantment: u8,
+    /// False for item types that exist in a single quality (gathered resources).
+    pub has_quality: bool,
 }
 impl Item {
     pub fn new(id: &str, name: &str) -> Result<Self> {
@@ -89,8 +91,43 @@ impl Item {
             name: name.trim().into(),
             tier,
             enchantment,
+            has_quality: has_quality(id),
         })
     }
+    /// Rebuilds an item from stored columns, which were validated when written.
+    pub fn stored(id: String, name: String, tier: Option<u8>, enchantment: u8) -> Self {
+        let has_quality = has_quality(&id);
+        Self {
+            id,
+            name,
+            tier,
+            enchantment,
+            has_quality,
+        }
+    }
+}
+/// Gathered resources, including enchanted ones (`T5_HIDE_LEVEL1@1`), exist in one quality
+/// only. Kalbion stores them without quality ("não se aplica"); the Albion Data Project lists
+/// them under quality 1.
+const SINGLE_QUALITY: [&str; 5] = ["WOOD", "ORE", "HIDE", "FIBER", "ROCK"];
+pub const MARKET_QUALITY_OF_SINGLE_QUALITY_ITEMS: u8 = 1;
+pub fn has_quality(id: &str) -> bool {
+    let base = id.split_once('@').map_or(id, |(base, _)| base);
+    let Some((tier, kind)) = base.strip_prefix('T').and_then(|rest| rest.split_once('_')) else {
+        return true;
+    };
+    let kind = match kind.split_once("_LEVEL") {
+        Some((kind, level)) if level.parse::<u8>().is_ok() => kind,
+        _ => kind,
+    };
+    !(tier.parse::<u8>().is_ok() && SINGLE_QUALITY.contains(&kind))
+}
+/// The quality to store for a reported one. Single-quality items have none: whatever a
+/// source reports for them (the game says 1; version 1 files required some value) carries no
+/// information, so it is dropped rather than rejected.
+pub fn normalize_quality(item: &Item, quality: Option<u8>) -> Result<Option<u8>> {
+    validate_quality(quality)?;
+    Ok(quality.filter(|_| item.has_quality))
 }
 /// Items such as `UNIQUE_HIDEOUT` or `TREASURE_*` have no tier; that is valid, not an error.
 pub fn parse_unique_name(id: &str) -> Result<(Option<u8>, u8)> {
@@ -149,7 +186,9 @@ impl LootReceived {
         if Item::new(&self.item.id, &self.item.name)? != self.item {
             return Err(invalid("Tier/enchantment não corresponde ao ID do item"));
         }
-        validate_quality(self.quality)?;
+        if normalize_quality(&self.item, self.quality)? != self.quality {
+            return Err(invalid("Qualidade não normalizada"));
+        }
         if self.quantity == 0 || self.quantity > MAX_QUANTITY {
             return Err(invalid("Quantidade deve estar entre 1 e 1.000.000"));
         }

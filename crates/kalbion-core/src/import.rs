@@ -2,7 +2,8 @@
 //! they are converted to and from domain events here, so the domain can evolve without
 //! breaking files that already exist.
 use crate::domain::{
-    normalize_player, normalize_timestamp, Item, LootReceived, Origin, MAX_QUANTITY,
+    normalize_player, normalize_quality, normalize_timestamp, Item, LootReceived, Origin,
+    MAX_QUANTITY,
 };
 use crate::error::{invalid, Result};
 use serde::{Deserialize, Serialize};
@@ -101,6 +102,10 @@ struct ItemV2 {
     tier: Option<u8>,
     #[serde(default)]
     enchantment: Option<u8>,
+    /// Derived from the ID like tier; accepted (and checked) so that loot rows copied from a
+    /// JSON export's `loot` section still import. Exports leave it out.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    has_quality: Option<bool>,
 }
 impl From<&LootReceived> for EventV2 {
     fn from(event: &LootReceived) -> Self {
@@ -116,6 +121,7 @@ impl From<&LootReceived> for EventV2 {
                 name: event.item.name.clone(),
                 tier: event.item.tier,
                 enchantment: Some(event.item.enchantment),
+                has_quality: None,
             },
             quality: event.quality,
             quantity: event.quantity,
@@ -134,6 +140,7 @@ struct Fields {
     item_name: String,
     tier: Option<u8>,
     enchantment: Option<u8>,
+    has_quality: Option<bool>,
     quality: Option<u8>,
     quantity: u32,
 }
@@ -144,6 +151,9 @@ fn normalize(fields: Fields) -> Result<LootReceived> {
         || fields
             .enchantment
             .is_some_and(|enchantment| enchantment != item.enchantment)
+        || fields
+            .has_quality
+            .is_some_and(|has_quality| has_quality != item.has_quality)
     {
         return Err(invalid("Tier/enchantment não corresponde ao ID do item"));
     }
@@ -157,8 +167,8 @@ fn normalize(fields: Fields) -> Result<LootReceived> {
         session_id: fields.session_id,
         occurred_at: normalize_timestamp(&fields.occurred_at)?,
         player: normalize_player(&fields.player)?,
+        quality: normalize_quality(&item, fields.quality)?,
         item,
-        quality: fields.quality,
         quantity: fields.quantity,
     };
     event.validate()?;
@@ -186,6 +196,7 @@ pub fn parse(json: &str) -> Result<Vec<LootReceived>> {
                 item_name: event.item.name,
                 tier: Some(event.item.tier),
                 enchantment: Some(event.item.enchantment),
+                has_quality: None,
                 quality: Some(event.item.quality),
                 quantity: event.quantity,
             })
@@ -204,6 +215,7 @@ pub fn parse(json: &str) -> Result<Vec<LootReceived>> {
                 item_name: event.item.name,
                 tier: event.item.tier,
                 enchantment: event.item.enchantment,
+                has_quality: event.item.has_quality,
                 quality: event.quality,
                 quantity: event.quantity,
             })

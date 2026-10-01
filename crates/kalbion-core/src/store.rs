@@ -36,8 +36,8 @@ pub struct MarketRefresh {
     /// Pairs the market has no current sell order for; an older market price, if any, is kept.
     pub unavailable: usize,
     pub manual_kept: usize,
-    /// Pairs whose quality was not reported; market data is per quality, so only a manual
-    /// price can cover them.
+    /// Pairs whose quality was not reported for an item that has quality; market data is per
+    /// quality, so only a manual price can cover them. Resources (no quality) are quoted.
     pub unknown_quality: usize,
 }
 #[derive(Debug, Serialize)]
@@ -126,12 +126,7 @@ fn read_loot_row(row: &Row) -> rusqlite::Result<LootRow> {
             origin: row.get(3)?,
             occurred_at: row.get(5)?,
             player: row.get(6)?,
-            item: Item {
-                id: row.get(7)?,
-                name: row.get(8)?,
-                tier: row.get(9)?,
-                enchantment: row.get(10)?,
-            },
+            item: Item::stored(row.get(7)?, row.get(8)?, row.get(9)?, row.get(10)?),
             quality: row.get(11)?,
             quantity: row.get(12)?,
         },
@@ -192,6 +187,15 @@ fn market_pairs(rows: &[LootRow]) -> BTreeMap<(String, Option<u8>), bool> {
         pairs.insert((row.event.item.id.clone(), row.event.quality), manual);
     }
     pairs
+}
+/// The quality to ask the market for: the loot's own, or 1 for items without quality
+/// (the Albion Data Project's convention). `None` when the quality is unknown.
+fn market_quality(item_id: &str, quality: Option<u8>) -> Option<u8> {
+    if has_quality(item_id) {
+        quality
+    } else {
+        Some(MARKET_QUALITY_OF_SINGLE_QUALITY_ITEMS)
+    }
 }
 /// Case-insensitive (ASCII) substring pattern for LIKE; empty input disables the condition.
 fn like_pattern(value: &str) -> String {
@@ -362,12 +366,12 @@ impl Store {
         let rows = statement.query_map(
             params![like_pattern(query), query.trim().to_uppercase(), limit],
             |row| {
-                Ok(Item {
-                    id: row.get(0)?,
-                    name: row.get(1)?,
-                    tier: row.get(2)?,
-                    enchantment: row.get(3)?,
-                })
+                Ok(Item::stored(
+                    row.get(0)?,
+                    row.get(1)?,
+                    row.get(2)?,
+                    row.get(3)?,
+                ))
             },
         )?;
         Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
@@ -380,12 +384,12 @@ impl Store {
                      WHERE unique_name = ?1",
                     [item_id],
                     |row| {
-                        Ok(Item {
-                            id: row.get(0)?,
-                            name: row.get(1)?,
-                            tier: row.get(2)?,
-                            enchantment: row.get(3)?,
-                        })
+                        Ok(Item::stored(
+                            row.get(0)?,
+                            row.get(1)?,
+                            row.get(2)?,
+                            row.get(3)?,
+                        ))
                     },
                 )
                 .optional()?
@@ -542,7 +546,7 @@ impl Store {
         quality: Option<u8>,
         quantity: u32,
     ) -> Result<InsertResult> {
-        validate_quality(quality)?;
+        let item = self.catalog_item(item_id)?;
         let event = LootReceived {
             id: new_id(),
             origin: Origin::Manual,
@@ -550,8 +554,8 @@ impl Store {
             session_id: session_id.into(),
             occurred_at: now(),
             player: normalize_player(player)?,
-            item: self.catalog_item(item_id)?,
-            quality,
+            quality: normalize_quality(&item, quality)?,
+            item,
             quantity,
         };
         self.ingest(&[event], false)
@@ -662,7 +666,10 @@ impl Store {
         let wanted = market_pairs(&self.rows(session_id, &Filter::default())?)
             .into_iter()
             .filter(|(_, manual)| !manual)
-            .filter_map(|((item_id, quality), _)| Some((item_id, quality?)))
+            .filter_map(|((item_id, quality), _)| {
+                let quality = market_quality(&item_id, quality)?;
+                Some((item_id, quality))
+            })
             // Loot migrated from old versions was never re-validated; such IDs cannot be quoted.
             .filter(|(item_id, _)| parse_unique_name(item_id).is_ok())
             .collect();
@@ -692,11 +699,15 @@ impl Store {
         let mut result = MarketRefresh {
             unknown_quality: pairs
                 .iter()
-                .filter(|((_, quality), manual)| quality.is_none() && !*manual)
+                .filter(|((item_id, quality), manual)| {
+                    market_quality(item_id, *quality).is_none() && !*manual
+                })
                 .count(),
             manual_kept: pairs
                 .iter()
-                .filter(|((_, quality), manual)| quality.is_some() && **manual)
+                .filter(|((item_id, quality), manual)| {
+                    market_quality(item_id, *quality).is_some() && **manual
+                })
                 .count(),
             ..MarketRefresh::default()
         };
@@ -705,9 +716,11 @@ impl Store {
             .map(|quote| ((quote.item_id.as_str(), quote.quality), quote))
             .collect();
         let recorded_at = now();
-        let mut prices: HashMap<(String, u8), Price> = HashMap::new();
+        // Keyed like the loot: resources are quoted as quality 1 but stored without quality.
+        let mut prices: HashMap<(String, Option<u8>), Price> = HashMap::new();
         for (item_id, quality) in &plan.wanted {
-            if pairs.get(&(item_id.clone(), Some(*quality))) != Some(&false) {
+            let key = (item_id.clone(), has_quality(item_id).then_some(*quality));
+            if pairs.get(&key) != Some(&false) {
                 // Now manual, or no longer an active pair of this session.
                 continue;
             }
@@ -718,7 +731,7 @@ impl Store {
             money(quote.unit_silver)?;
             normalize_timestamp(&quote.observed_at)?;
             prices.insert(
-                (item_id.clone(), *quality),
+                key,
                 Price {
                     unit_silver: quote.unit_silver,
                     source: PriceSource::AlbionData,
@@ -730,10 +743,8 @@ impl Store {
             );
         }
         for row in &mut rows {
-            if let Some(quality) = row.event.quality {
-                if let Some(price) = prices.get(&(row.event.item.id.clone(), quality)) {
-                    row.price = Some(price.clone());
-                }
+            if let Some(price) = prices.get(&(row.event.item.id.clone(), row.event.quality)) {
+                row.price = Some(price.clone());
             }
         }
         totals(&rows)?;
@@ -751,7 +762,7 @@ impl Store {
                 params![
                     session_id,
                     item_id,
-                    quality,
+                    quality.unwrap_or(0),
                     price.unit_silver,
                     price.source,
                     price.server,

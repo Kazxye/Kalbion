@@ -46,7 +46,7 @@ const filterSelects = [
     all: 'Qualidade',
     options: [
       ...qualities.map((label, index) => [index + 1, label]),
-      [0, 'Desconhecida'],
+      [0, 'Desconhecida ou não se aplica'],
     ],
   },
 ] as const;
@@ -322,7 +322,10 @@ function LootRowView({
         <TierBadge item={event.item} />
       </td>
       <td>
-        <QualityMark quality={event.quality} />
+        <QualityMark
+          quality={event.quality}
+          hasQuality={event.item.has_quality}
+        />
       </td>
       <td className="numeric amount">{silver(event.quantity)}</td>
       <td className="numeric">
@@ -476,6 +479,7 @@ export function ManualForm({
   const [results, setResults] = useState<Item[] | null>(null);
   const [selected, setSelected] = useState('');
   const [searchError, setSearchError] = useState('');
+  const chosen = results?.find((item) => item.id === selected);
   useEffect(() => {
     let current = true;
     const timer = setTimeout(() => {
@@ -504,7 +508,8 @@ export function ManualForm({
       onSubmit={(event) => {
         event.preventDefault();
         const data = new FormData(event.currentTarget);
-        const quality = String(data.get('quality'));
+        // A disabled select is not submitted: resources have no quality.
+        const quality = String(data.get('quality') ?? '');
         submit({
           item_id: selected,
           player: String(data.get('player')),
@@ -564,14 +569,20 @@ export function ManualForm({
       <InlineError message={searchError} />
       <div className="form-grid">
         <Field label="Qualidade">
-          <select name="quality" defaultValue="1">
-            {qualities.map((quality, index) => (
-              <option key={quality} value={index + 1}>
-                {quality}
-              </option>
-            ))}
-            <option value="">Desconhecida</option>
-          </select>
+          {chosen && !chosen.has_quality ? (
+            <select name="quality" defaultValue="" disabled>
+              <option value="">Não se aplica</option>
+            </select>
+          ) : (
+            <select name="quality" defaultValue="1">
+              {qualities.map((quality, index) => (
+                <option key={quality} value={index + 1}>
+                  {quality}
+                </option>
+              ))}
+              <option value="">Desconhecida</option>
+            </select>
+          )}
         </Field>
         <Field label="Quantidade">
           <input

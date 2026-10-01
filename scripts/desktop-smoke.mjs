@@ -201,22 +201,26 @@ try {
   for (const row of priced.rows) {
     if (row.price?.source === 'manual') {
       assert.equal(row.price.unit_silver, 100, 'manual price prevails');
-    } else if (row.event.quality === null) {
-      assert.equal(row.price, null, 'unknown quality is never market-priced');
     } else {
+      // Simulated resources have no quality and are quoted as quality 1.
+      assert.equal(row.event.quality === null, !row.event.item.has_quality);
       assert.equal(row.price.source, 'albion_data');
-      assert.equal(row.price.unit_silver, 1000 + row.event.quality * 10);
+      assert.equal(row.price.unit_silver, 1000 + (row.event.quality ?? 1) * 10);
       assert.equal(row.price.observed_at, `${observed}.000000Z`);
     }
   }
-  // The simulation has 5 known qualities; the manual price may have taken one of them.
+  // Every simulated item can be quoted; the manual price kept one of them.
   const marketPriced = priced.rows.filter(
     (row) => row.price?.source === 'albion_data',
   ).length;
-  const manualKnown = priced.rows.filter(
-    (row) => row.price?.source === 'manual' && row.event.quality !== null,
-  ).length;
-  assert.equal(marketPriced, 5 - manualKnown);
+  assert.equal(marketPriced, 6);
+  assert.equal(
+    await execute(
+      `return [...document.querySelectorAll('.quality.not-applicable')].length`,
+    ),
+    2,
+    'resources show "Não se aplica"',
+  );
   assert.ok(
     await execute(
       `return document.body.textContent.includes('Albion Data Project: ' + arguments[0] + ' preços atualizados')`,

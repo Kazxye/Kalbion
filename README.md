@@ -56,7 +56,7 @@ Os ícones vêm do serviço oficial de renderização da SBI (`render.albiononli
 **Loot → Atualizar preços** consulta o [Albion Data Project](https://www.albion-online-data.com/) (dados enviados por jogadores, API pública e somente leitura) no servidor e na cidade da sessão. O preço usado é a **menor oferta de venda** (`sell_price_min`) para o item e a quality exatos; a interface mostra a fonte e a idade do dado (`ADP, há 3 h`; acima de 24 h, marcado como antigo).
 
 - **Manual prevalece:** a atualização nunca substitui um preço manual, nem um digitado enquanto a consulta estava em andamento. Salvar um preço sobre um preço ADP o torna manual; remover o preço deixa a próxima atualização preenchê-lo.
-- **Ausência não é zero:** item sem oferta continua sem preço (um preço ADP anterior é mantido, com a idade dele). Quality desconhecida não recebe cotação, porque o mercado é por quality; só aceita preço manual.
+- **Ausência não é zero:** item sem oferta continua sem preço (um preço ADP anterior é mantido, com a idade dele). Quality desconhecida não recebe cotação, porque o mercado é por quality; só aceita preço manual. Recursos sem quality são consultados como quality 1, a convenção do ADP (conferida na API: os demais valores voltam zerados), e o preço fica guardado sem quality, como o loot.
 - **Instantâneo:** como o preço manual, o preço ADP fica gravado na sessão (`recorded_at` e `observed_at`); uma sessão encerrada não muda com o mercado até alguém atualizar de novo.
 - **Rede:** o core Rust fala com um host fixo por servidor (`west`, `europe` e `east.albion-online-data.com`), somente HTTPS, sem redirecionamentos, timeout de 15 s por requisição (nova tentativa imediata só quando a conexão falha em menos de 2 s), resposta limitada a 4 MB e listas de itens divididas abaixo do limite de URL; sessões com muitos itens fazem várias requisições em sequência. Linhas malformadas, com preço negativo ou data ilegível ou futura são ignoradas e contadas no log; havendo duplicatas, vale a menor oferta. Loot anulado não é consultado. Cotações (inclusive "sem oferta") ficam 5 minutos em cache de memória. HTTP 429 pausa todas as consultas pelo `Retry-After` (padrão 60 s, máximo 10 min). A consulta roda fora do lock do banco, com comando IPC próprio (`refresh_market_prices`). Falhas aparecem como "indisponível", nunca como preço.
 
@@ -64,6 +64,7 @@ Os ícones vêm do serviço oficial de renderização da SBI (`render.albiononli
 
 - **Item:** identificado pelo `UniqueName` do Albion (`T5_BAG@1`). Tier e enchantment são derivados do ID; itens como `UNIQUE_HIDEOUT` não têm tier.
 - **Quality:** pertence ao loot, não ao item. `null` significa “não informada pela fonte” e nunca é preenchida por suposição. Preços de quality desconhecida são separados das conhecidas.
+- **Recursos sem quality:** madeira, minério, pelego, fibra e pedra (`WOOD`, `ORE`, `HIDE`, `FIBER`, `ROCK`, inclusive encantados como `T5_HIDE_LEVEL1@1`) existem numa única quality e aparecem como **Não se aplica**. Qualquer quality informada para eles (o jogo diz 1; arquivos v1 exigiam um valor) é descartada ao gravar, não rejeitada. Tier e enchantment continuam derivados do ID. Itens refinados (`PLANKS`, `METALBAR` etc.) ainda não entram nessa regra.
 - **Origem:** `simulated`, `manual` ou `observed`. Importados recebem a marca `imported`; `observed` importado é declaração do arquivo, não autenticidade verificada.
 - **Deduplicação:** identidade única `(source, id)`. Replay idêntico é ignorado; mesma identidade com conteúdo diferente rejeita o lote inteiro; loots iguais com IDs diferentes são mantidos. Conteúdo e janelas de tempo nunca são usados para adivinhar identidade. Horários são normalizados para UTC antes da comparação.
 - **Correções:** loot é **anulado** (continua no histórico, na exportação e na deduplicação, mas sai dos totais; pode ser restaurado). O ledger só recebe acréscimos: erros são corrigidos por **estorno**, que fica visível ao lado do original.
@@ -88,13 +89,13 @@ Os ícones vêm do serviço oficial de renderização da SBI (`render.albiononli
 }
 ```
 
-`quality` pode ser `null`; `item.tier` e `item.enchantment` são opcionais e, se presentes, precisam concordar com o ID. A versão 1 (exports do primeiro build, com `quality` dentro de `item`) continua aceita. Limites: 5 MB, 10.000 eventos, sessão existente e aberta, `session_id` igual ao da sessão de destino (sem remapeamento). O arquivo de importação é um contrato próprio (`crates/kalbion-core/src/import.rs`), separado das structs de domínio. O export JSON usa o mesmo contrato em `events` e pode ser reimportado na mesma sessão; preços, anulações e ledger não são restaurados por essa via.
+`quality` pode ser `null`; `item.tier`, `item.enchantment` e `item.has_quality` são opcionais e, se presentes, precisam concordar com o ID. A versão 1 (exports do primeiro build, com `quality` dentro de `item`) continua aceita. Limites: 5 MB, 10.000 eventos, sessão existente e aberta, `session_id` igual ao da sessão de destino (sem remapeamento). O arquivo de importação é um contrato próprio (`crates/kalbion-core/src/import.rs`), separado das structs de domínio. O export JSON usa o mesmo contrato em `events` e pode ser reimportado na mesma sessão; preços, anulações e ledger não são restaurados por essa via.
 
 ## Dados locais e logs
 
 - Banco: `~/.local/share/io.kalbion.desktop/kalbion.db` (Linux) ou `%APPDATA%\io.kalbion.desktop\kalbion.db` (Windows).
 - Log JSON: subpasta `logs/kalbion.log` do mesmo diretório no Linux; no Windows, o caminho aparece em **Configurações**. Rotaciona ao atingir 5 MB, inclusive durante o uso (mantém `kalbion.log.1`); falha de gravação aparece em Configurações. Sem senhas, chaves, tokens ou payloads importados.
-- Migrations rodam ao abrir o banco, uma transação por versão. Antes de atualizar um banco existente, uma cópia consistente é gravada ao lado (`kalbion-v<versão anterior>-backup-<data>.db`). Bancos de versões futuras são recusados.
+- Migrations rodam ao abrir o banco, uma transação por versão. Antes de atualizar um banco existente, uma cópia consistente é gravada ao lado (`kalbion-v<versão anterior>-backup-<data>.db`). Bancos de versões futuras são recusados. A versão 3 também move loot e preços de recursos antigos para “sem quality” (havendo preços em várias qualities, vale o mais recente), para que exports antigos continuem sendo reconhecidos como duplicados.
 - Backup manual: fechar o app e copiar o diretório inteiro, incluindo arquivos `-wal`/`-shm` se existirem.
 
 ## Licenciamento (KeyAuth)

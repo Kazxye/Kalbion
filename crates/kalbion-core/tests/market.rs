@@ -341,7 +341,11 @@ fn live_service_answers_for_every_server() {
     let market = AlbionDataProject::default();
     for server in SERVERS {
         let quotes = market
-            .quotes(server, "Bridgewatch", &pairs(&[("T4_BAG", 1)]))
+            .quotes(
+                server,
+                "Bridgewatch",
+                &pairs(&[("T4_BAG", 1), ("T5_HIDE_LEVEL1@1", 1)]),
+            )
             .unwrap();
         // The market may have no orders right now; whatever comes back must be sane.
         for quote in quotes {
@@ -410,8 +414,9 @@ fn voided_loot_is_not_quoted_and_counts_cover_only_what_needs_a_price() {
     for (item_id, quality) in [
         ("T4_BAG", Some(1)),
         ("T5_BAG@1", Some(1)),
+        ("T4_BAG", None),
+        ("T5_BAG@1", None),
         ("T4_WOOD", None),
-        ("T6_ORE", None),
     ] {
         store
             .manual(&session.id, "Alice", item_id, quality, 1)
@@ -420,14 +425,14 @@ fn voided_loot_is_not_quoted_and_counts_cover_only_what_needs_a_price() {
     let rows = store.rows(&session.id, &Filter::default()).unwrap();
     let bag = rows
         .iter()
-        .find(|row| row.event.item.id == "T5_BAG@1")
+        .find(|row| row.event.item.id == "T5_BAG@1" && row.event.quality.is_some())
         .unwrap();
     store
         .set_voided(&session.id, &bag.event.source, &bag.event.id, true)
         .unwrap();
-    store.price(&session.id, "T4_WOOD", None, Some(5)).unwrap();
+    store.price(&session.id, "T5_BAG@1", None, Some(5)).unwrap();
     let plan = store.market_plan(&session.id).unwrap();
-    assert_eq!(plan.wanted, pairs(&[("T4_BAG", 1)]));
+    assert_eq!(plan.wanted, pairs(&[("T4_BAG", 1), ("T4_WOOD", 1)]));
     let result = store
         .apply_market_quotes(&session.id, &plan, &[quote("T4_BAG", 1, 10)])
         .unwrap();
@@ -438,6 +443,93 @@ fn voided_loot_is_not_quoted_and_counts_cover_only_what_needs_a_price() {
             result.manual_kept,
             result.unknown_quality
         ),
-        (1, 0, 0, 1)
+        (1, 1, 0, 1)
+    );
+}
+
+#[test]
+fn resources_have_no_quality_and_are_quoted_as_quality_one() {
+    for (item_id, expected) in [
+        ("T4_WOOD", false),
+        ("T6_ORE", false),
+        ("T5_HIDE_LEVEL1@1", false),
+        ("T8_FIBER_LEVEL3@3", false),
+        ("T4_ROCK", false),
+        ("T4_BAG", true),
+        ("T4_PLANKS", true),
+        ("T6_MAIN_SWORD@2", true),
+        ("UNIQUE_HIDEOUT", true),
+        ("TREASURE_ORE", true),
+    ] {
+        assert_eq!(has_quality(item_id), expected, "{item_id}");
+    }
+    let wood = Item::new("T5_WOOD_LEVEL2@2", "Madeira").unwrap();
+    assert_eq!(
+        (wood.tier, wood.enchantment, wood.has_quality),
+        (Some(5), 2, false)
+    );
+
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("test.db");
+    let mut store = Store::open(&path).unwrap();
+    let session = store.create_session("Gathering").unwrap();
+    // Whatever quality a source reports for a resource is dropped, never rejected.
+    store
+        .manual(&session.id, "Alice", "T4_WOOD", Some(1), 30)
+        .unwrap();
+    let file = |quality: u8| {
+        json!({ "schema_version": 2, "events": [{
+            "id": format!("ore-{quality}"), "source": "test.v1", "origin": "manual",
+            "session_id": session.id, "occurred_at": "2026-10-01T12:00:00Z", "player": "Bob",
+            "item": { "id": "T6_ORE", "name": "Minério", "tier": 6, "enchantment": 0 },
+            "quality": quality, "quantity": 10
+        }]})
+        .to_string()
+    };
+    assert_eq!(store.import(&session.id, &file(1)).unwrap().inserted, 1);
+    assert_eq!(store.import(&session.id, &file(3)).unwrap().inserted, 1);
+    assert!(store.import(&session.id, &file(6)).is_err());
+    let rows = store.rows(&session.id, &Filter::default()).unwrap();
+    assert!(rows
+        .iter()
+        .all(|row| row.event.quality.is_none() && !row.event.item.has_quality));
+    let exported = store.export(&session.id, "json").unwrap();
+    let exported: serde_json::Value = serde_json::from_str(&exported).unwrap();
+    let replay = json!({ "schema_version": 2, "events": exported["events"] }).to_string();
+    assert_eq!(store.import(&session.id, &replay).unwrap().duplicates, 3);
+    // Loot rows as the app serializes them (with has_quality) also replay; a contradicting
+    // has_quality is rejected like a contradicting tier.
+    let events: Vec<_> = rows
+        .iter()
+        .map(|row| serde_json::to_value(&row.event).unwrap())
+        .collect();
+    let replay = json!({ "schema_version": 2, "events": events }).to_string();
+    assert_eq!(store.import(&session.id, &replay).unwrap().duplicates, 3);
+    let mut lying = events[0].clone();
+    lying["id"] = json!("lying");
+    lying["item"]["has_quality"] = json!(true);
+    let lying = json!({ "schema_version": 2, "events": [lying] }).to_string();
+    assert!(store.import(&session.id, &lying).is_err());
+
+    let plan = store.market_plan(&session.id).unwrap();
+    assert_eq!(plan.wanted, pairs(&[("T4_WOOD", 1), ("T6_ORE", 1)]));
+    let result = store
+        .apply_market_quotes(
+            &session.id,
+            &plan,
+            &[quote("T4_WOOD", 1, 7), quote("T6_ORE", 1, 40)],
+        )
+        .unwrap();
+    assert_eq!((result.updated, result.unknown_quality), (2, 0));
+    drop(store);
+    let store = Store::open(&path).unwrap();
+    let view = store.view(&session.id, &Filter::default()).unwrap();
+    assert_eq!(view.totals.session.estimated_silver, 30 * 7 + 20 * 40);
+    assert_eq!(view.totals.session.unpriced_events, 0);
+    // A manual price for a resource is also stored without quality and prevails.
+    store.price(&session.id, "T6_ORE", None, Some(50)).unwrap();
+    assert_eq!(
+        store.market_plan(&session.id).unwrap().wanted,
+        pairs(&[("T4_WOOD", 1)])
     );
 }

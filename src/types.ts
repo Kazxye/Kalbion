@@ -3,6 +3,8 @@ export interface Item {
   name: string;
   tier: number | null;
   enchantment: number;
+  /** False for resources, which exist in a single quality ("não se aplica"). */
+  has_quality: boolean;
 }
 export interface Session {
   id: string;

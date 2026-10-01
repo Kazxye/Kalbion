@@ -5,8 +5,12 @@ export const qualities = [
   'Excelente',
   'Obra-prima',
 ];
-export const qualityLabel = (quality: number | null) =>
-  quality === null ? 'Desconhecida' : qualities[quality - 1];
+export const qualityLabel = (quality: number | null, hasQuality = true) =>
+  !hasQuality
+    ? 'Não se aplica'
+    : quality === null
+      ? 'Desconhecida'
+      : qualities[quality - 1];
 export const tierLabel = (tier: number | null, enchantment: number) =>
   tier === null ? `—.${enchantment}` : `T${tier}.${enchantment}`;
 export const serverNames: Record<string, string> = {

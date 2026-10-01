@@ -92,7 +92,15 @@ export function TierBadge({ item }: { item: Item }) {
 }
 
 /** Filled diamonds for quality 1–5 plus its name; unknown quality is never drawn as Normal. */
-export function QualityMark({ quality }: { quality: number | null }) {
+export function QualityMark({
+  quality,
+  hasQuality,
+}: {
+  quality: number | null;
+  hasQuality: boolean;
+}) {
+  if (!hasQuality)
+    return <span className="quality not-applicable">Não se aplica</span>;
   return (
     <span className={`quality ${quality === null ? 'unknown' : ''}`}>
       <span className="pips" aria-hidden>

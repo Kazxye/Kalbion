@@ -477,7 +477,10 @@ export default function App() {
             <InlineError message={error} />
             <p>
               <strong>{pricing.event.item.name}</strong>, qualidade{' '}
-              {qualityLabel(pricing.event.quality).toLowerCase()}
+              {qualityLabel(
+                pricing.event.quality,
+                pricing.event.item.has_quality,
+              ).toLowerCase()}
             </p>
             {pricing.price?.source === 'albion_data' &&
               pricing.price.observed_at && (
@@ -504,10 +507,12 @@ export default function App() {
             <p className="help">
               Estimativa no mercado de {session?.city} (
               {serverNames[session?.server ?? 'americas']}). Vale para todos os
-              registros deste item com esta qualidade na sessão
-              {pricing.event.quality === null
-                ? ', separada das qualidades conhecidas. Sem qualidade informada não há cotação de mercado'
-                : ''}
+              registros deste item
+              {!pricing.event.item.has_quality
+                ? ' na sessão'
+                : pricing.event.quality === null
+                  ? ' com qualidade desconhecida na sessão, separada das qualidades conhecidas. Sem qualidade informada não há cotação de mercado'
+                  : ' com esta qualidade na sessão'}
               .
             </p>
             <div className="form-actions">

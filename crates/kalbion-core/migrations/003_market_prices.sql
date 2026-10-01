@@ -1,6 +1,7 @@
 -- Version 3: prices may also come from the Albion Data Project. SQLite cannot change a CHECK
 -- constraint in place, so the table is rebuilt. Market prices always carry the time the
--- market observed them.
+-- market observed them. Quality 0 covers both unknown quality and items without quality
+-- (resources); migrations.rs then moves resource loot and prices to "no quality".
 CREATE TABLE item_prices_v3 (
   session_id TEXT NOT NULL REFERENCES sessions(id),
   item_id TEXT NOT NULL,
@@ -12,7 +13,7 @@ CREATE TABLE item_prices_v3 (
   recorded_at TEXT NOT NULL,
   observed_at TEXT,
   PRIMARY KEY (session_id, item_id, quality),
-  CHECK (source = 'manual' OR (observed_at IS NOT NULL AND quality > 0))
+  CHECK (source = 'manual' OR observed_at IS NOT NULL)
 );
 INSERT INTO item_prices_v3 (session_id, item_id, quality, unit_silver, source, server, city,
   recorded_at, observed_at)

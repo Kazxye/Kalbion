@@ -435,6 +435,17 @@ fn version_one_database_is_migrated_with_backup_and_old_exports_still_replay() {
         "item": { "id": "T5_BAG@1", "name": "Bolsa do Especialista", "tier": 5, "enchantment": 1, "quality": 2 },
         "quantity": 1
     });
+    let wood_events: Vec<_> = [("wood-1", 1), ("wood-2", 2)]
+        .into_iter()
+        .map(|(id, quality)| {
+            json!({
+                "id": id, "origin": "manual", "source": "kalbion.manual.v1",
+                "session_id": "s1", "occurred_at": "2026-10-01T04:30:00+00:00", "player": "Luna",
+                "item": { "id": "T4_WOOD", "name": "Toras de Pinho", "tier": 4, "enchantment": 0, "quality": quality },
+                "quantity": 10
+            })
+        })
+        .collect();
     {
         let connection = rusqlite::Connection::open(&path).unwrap();
         connection
@@ -460,6 +471,25 @@ fn version_one_database_is_migrated_with_backup_and_old_exports_still_replay() {
             "INSERT INTO ledger VALUES ('l1', 's1', ?1)",
             [json!({ "id": "l1", "session_id": "s1", "kind": "income", "player": "Kazz", "description": "Venda", "amount": 700, "occurred_at": "2026-10-01T06:00:00+00:00" }).to_string()],
         ).unwrap();
+        // The old manual form defaulted resources to Normal; prices followed that quality.
+        for event in &wood_events {
+            let id = event["id"].as_str().unwrap();
+            connection
+                .execute(
+                    "INSERT INTO events VALUES ('kalbion.manual.v1', ?1, 's1', ?2, 0)",
+                    [id.to_string(), event.to_string()],
+                )
+                .unwrap();
+        }
+        for (quality, amount, at) in [
+            (1, 3, "2026-10-01T05:00:00+00:00"),
+            (2, 9, "2026-10-01T05:30:00+00:00"),
+        ] {
+            connection.execute(
+                "INSERT INTO prices VALUES ('s1', 'T4_WOOD', ?1, ?2)",
+                rusqlite::params![quality, json!({ "unit_silver": amount, "source": "manual", "server": "europe", "city": "Lymhurst", "queried_at": at }).to_string()],
+            ).unwrap();
+        }
         connection
             .execute(
                 "INSERT INTO settings VALUES (1, ?1)",
@@ -481,17 +511,36 @@ fn version_one_database_is_migrated_with_backup_and_old_exports_still_replay() {
     assert_eq!(backups, 1);
     assert_eq!(store.settings().unwrap().city, "Lymhurst");
     let view = store.view("s1", &Filter::default()).unwrap();
-    assert_eq!(
-        view.rows[0].event.occurred_at,
-        "2026-10-01T04:22:32.137513Z"
-    );
-    assert_eq!(view.rows[0].event.quality, Some(2));
-    assert_eq!(view.totals.session.estimated_silver, 500);
+    let bag = view
+        .rows
+        .iter()
+        .find(|row| row.event.id == "old-1")
+        .unwrap();
+    assert_eq!(bag.event.occurred_at, "2026-10-01T04:22:32.137513Z");
+    assert_eq!(bag.event.quality, Some(2));
+    // Resource loot loses its meaningless quality; the most recent of its prices wins.
+    let wood: Vec<_> = view
+        .rows
+        .iter()
+        .filter(|row| row.event.item.id == "T4_WOOD")
+        .collect();
+    assert_eq!(wood.len(), 2);
+    assert!(wood.iter().all(|row| row.event.quality.is_none()
+        && row
+            .price
+            .as_ref()
+            .is_some_and(|price| price.unit_silver == 9)));
+    assert_eq!(view.totals.session.estimated_silver, 500 + 20 * 9);
     assert_eq!(view.finance.income, 700);
     let result = store
         .import("s1", &import_file(1, json!([old_event])))
         .unwrap();
     assert_eq!(result.duplicates, 1);
+    // Old exports that still say quality 1 or 2 for the wood replay as duplicates.
+    let result = store
+        .import("s1", &import_file(1, json!(wood_events)))
+        .unwrap();
+    assert_eq!((result.inserted, result.duplicates), (0, 2));
     drop(store);
     assert!(Store::open(&path).is_ok());
 }
