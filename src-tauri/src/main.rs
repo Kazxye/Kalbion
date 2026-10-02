@@ -16,6 +16,7 @@ use std::io::Write;
 use std::sync::Mutex;
 use tauri::Manager;
 
+mod live;
 mod logging;
 
 struct AppState(Mutex<Store>);
@@ -438,6 +439,40 @@ async fn import_capture(
         newer_than_codebook,
     }))
 }
+#[tauri::command]
+async fn live_capture_interfaces() -> std::result::Result<Vec<live::Interface>, String> {
+    tauri::async_runtime::spawn_blocking(live::interfaces)
+        .await
+        .map_err(|_| "Falha ao listar interfaces".to_string())?
+}
+/// Starts the capture helper on an interface it listed itself; the helper path never comes
+/// from the webview.
+#[tauri::command]
+async fn start_live_capture(
+    app: tauri::AppHandle,
+    session_id: String,
+    roster: Vec<String>,
+    interface: String,
+    trace: bool,
+) -> std::result::Result<live::LiveStatus, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let capture = app.state::<live::LiveCapture>();
+        live::start(&app, &capture, session_id, roster, interface, trace)
+    })
+    .await
+    .map_err(|_| "Falha ao iniciar a captura".to_string())?
+}
+#[tauri::command]
+async fn stop_live_capture(app: tauri::AppHandle) -> std::result::Result<live::LiveStatus, String> {
+    tauri::async_runtime::spawn_blocking(move || live::stop(&app.state::<live::LiveCapture>()))
+        .await
+        .map_err(|_| "Falha ao parar a captura".to_string())?
+}
+#[tauri::command]
+fn live_capture_status(capture: tauri::State<'_, live::LiveCapture>) -> live::LiveStatus {
+    live::reap(&capture);
+    capture.status()
+}
 /// Debug builds can point at a local mock (desktop smoke test); release builds always use
 /// the official hosts.
 fn market_source() -> AlbionDataProject {
@@ -522,6 +557,7 @@ fn main() {
             let store = Store::open(directory.join("kalbion.db"))?;
             app.manage(AppState(Mutex::new(store)));
             app.manage(market_source());
+            app.manage(live::LiveCapture::default());
             match IconCache::new(app.path().app_cache_dir()?.join("icons")) {
                 Ok(icons) => {
                     app.manage(icons);
@@ -545,7 +581,11 @@ fn main() {
             export_session,
             import_catalog,
             refresh_market_prices,
-            import_capture
+            import_capture,
+            live_capture_interfaces,
+            start_live_capture,
+            stop_live_capture,
+            live_capture_status
         ])
         .run(tauri::generate_context!());
     if let Err(error) = result {

@@ -8,12 +8,14 @@
 //! - Items: resolved by the game's numeric index through the imported catalog; an index the
 //!   catalog does not know is reported, not guessed.
 //! - Quality: the loot event does not carry it, so it stays unknown.
-use crate::Capture;
+use crate::{Capture, Observation};
 use kalbion_core::domain::{normalize_player, Item, LootReceived, Origin};
 use serde::Serialize;
 use std::collections::{BTreeMap, BTreeSet};
 
 pub const SOURCE: &str = "kalbion.capture.pcap";
+/// Live capture: `id` is the capture run plus the packet/command position in that run.
+pub const LIVE_SOURCE: &str = "kalbion.capture.live";
 pub const MAX_ROSTER: usize = 300;
 
 #[derive(Debug, Default, Serialize)]
@@ -46,6 +48,51 @@ pub fn roster(names: &[String]) -> Result<BTreeSet<String>, String> {
     Ok(roster)
 }
 
+/// What became of one observed loot pick-up.
+#[derive(Debug)]
+pub enum Outcome {
+    Event(LootReceived),
+    /// Picked up by someone outside the roster; the name is not kept.
+    OutsideRoster,
+    /// The catalog has no item with this game index.
+    UnknownItem(u32),
+    InvalidPlayer,
+}
+
+/// Converts one observation. `run` prefixes the event id (capture fingerprint or live run).
+pub fn observation<E>(
+    observation: &Observation,
+    run: &str,
+    source: &str,
+    session_id: &str,
+    roster: &BTreeSet<String>,
+    resolve: &mut impl FnMut(u32) -> Result<Option<Item>, E>,
+) -> Result<Outcome, E> {
+    let Ok(player) = normalize_player(&observation.loot.looted_by) else {
+        return Ok(Outcome::InvalidPlayer);
+    };
+    if !roster.contains(&player.to_lowercase()) {
+        return Ok(Outcome::OutsideRoster);
+    }
+    let Some(item) = resolve(observation.loot.item_index)? else {
+        return Ok(Outcome::UnknownItem(observation.loot.item_index));
+    };
+    Ok(Outcome::Event(LootReceived {
+        id: format!(
+            "{run}:{}:{}",
+            observation.position.packet, observation.position.command
+        ),
+        origin: Origin::Observed,
+        source: source.into(),
+        session_id: session_id.into(),
+        occurred_at: observation.occurred_at.clone(),
+        player,
+        item,
+        quality: None,
+        quantity: observation.loot.quantity,
+    }))
+}
+
 pub fn to_events<E>(
     capture: &Capture,
     session_id: &str,
@@ -57,36 +104,20 @@ pub fn to_events<E>(
         ..Report::default()
     };
     let mut events = Vec::new();
-    for observation in &capture.observations {
-        let Ok(player) = normalize_player(&observation.loot.looted_by) else {
-            report.invalid_players += 1;
-            continue;
-        };
-        if !roster.contains(&player.to_lowercase()) {
-            report.outside_roster += 1;
-            continue;
-        }
-        let Some(item) = resolve(observation.loot.item_index)? else {
-            *report
-                .unknown_items
-                .entry(observation.loot.item_index)
-                .or_default() += 1;
-            continue;
-        };
-        events.push(LootReceived {
-            id: format!(
-                "{}:{}:{}",
-                capture.fingerprint, observation.position.packet, observation.position.command
-            ),
-            origin: Origin::Observed,
-            source: SOURCE.into(),
-            session_id: session_id.into(),
-            occurred_at: observation.occurred_at.clone(),
-            player,
+    for item in &capture.observations {
+        match observation(
             item,
-            quality: None,
-            quantity: observation.loot.quantity,
-        });
+            &capture.fingerprint,
+            SOURCE,
+            session_id,
+            roster,
+            &mut resolve,
+        )? {
+            Outcome::Event(event) => events.push(event),
+            Outcome::OutsideRoster => report.outside_roster += 1,
+            Outcome::UnknownItem(index) => *report.unknown_items.entry(index).or_default() += 1,
+            Outcome::InvalidPlayer => report.invalid_players += 1,
+        }
     }
     report.converted = events.len();
     Ok((events, report))

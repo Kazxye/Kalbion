@@ -6,6 +6,10 @@ fn main() {
             "import_catalog",
             "refresh_market_prices",
             "import_capture",
+            "live_capture_interfaces",
+            "start_live_capture",
+            "stop_live_capture",
+            "live_capture_status",
         ]),
     ))
     .expect("Tauri build failed");

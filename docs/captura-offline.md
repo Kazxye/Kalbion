@@ -97,4 +97,4 @@ Todos **sintéticos** (`crates/kalbion-capture/tests`):
 
 ## Fora do escopo
 
-Captura ao vivo, drivers e permissões; qualidade do item; radar, alertas de PK, overlay ou qualquer rastreamento de outros jogadores.
+Qualidade do item; radar, alertas de PK, overlay ou qualquer rastreamento de outros jogadores. A captura ao vivo usa este mesmo decoder e está em [captura-ao-vivo.md](captura-ao-vivo.md).

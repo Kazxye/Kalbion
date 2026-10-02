@@ -128,7 +128,12 @@ export function OriginTag({
   origin: LootEvent['origin'];
   imported: boolean;
 }) {
-  const { label, icon: Icon } = origins[origin];
+  const { icon: Icon } = origins[origin];
+  // Observed and not imported: Kalbion itself captured it (live capture).
+  const label =
+    origin === 'observed' && !imported
+      ? 'Capturado ao vivo'
+      : origins[origin].label;
   return (
     <span className="origin-tags">
       <span className={`tag ${origin === 'simulated' ? 'simulated' : ''}`}>

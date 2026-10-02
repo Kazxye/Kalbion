@@ -1,6 +1,6 @@
 # Kalbion
 
-Companion desktop local para Albion Online: Tauri 2 + Rust + React/TypeScript + Vite + Tailwind + SQLite. Interface em português, tema escuro, sem servidor de aplicação nem navegador externo. A versão de desenvolvimento usa somente dados simulados, manuais ou importados (inclusive arquivos de captura gravados pelo usuário, em caráter experimental); o Kalbion não captura tráfego do jogo.
+Companion desktop local para Albion Online: Tauri 2 + Rust + React/TypeScript + Vite + Tailwind + SQLite. Interface em português, tema escuro, sem servidor de aplicação nem navegador externo. Além de dados simulados, manuais e importados, há captura de loot em caráter experimental: importação de arquivos PCAP gravados pelo usuário e captura ao vivo por um ajudante separado, o único componente com permissão de rede. Nenhuma das duas foi validada com o jogo real.
 
 ## Executar
 
@@ -64,6 +64,18 @@ Os ícones vêm do serviço oficial de renderização da SBI (`render.albiononli
 
 **Ações da sessão → Importar captura (PCAP)** lê um arquivo PCAP/PCAPNG gravado pelo próprio usuário e importa o loot (evento `EvOtherGrabbedLoot`) dos jogadores de uma lista informada. Nada é capturado pelo Kalbion: sem drivers, sem privilégios, sem rede. Requer o catálogo `items.json` importado; a qualidade fica desconhecida; reimportar o mesmo arquivo não duplica. Testado só com capturas sintéticas; **não há autorização da SBI** para este uso. Fontes, campos comprovados, limites e testes: [docs/captura-offline.md](docs/captura-offline.md).
 
+## Captura ao vivo (experimental)
+
+**Ações da sessão → Captura ao vivo** lê os pacotes que o servidor do Albion envia (UDP, porta de origem 5056) e grava o loot dos jogadores da lista assim que chega, com painel de status e log de diagnóstico (`logs/captures/live-*.jsonl`) para conferir o que o jogo enviou quando um item não aparece. A captura roda no ajudante `kalbion-sniffer` (sem modo promíscuo, filtro fixo, não interpreta pacotes); a decodificação roda no app sem privilégios.
+
+```bash
+cargo build -p kalbion-sniffer
+sudo setcap cap_net_raw=eip target/debug/kalbion-sniffer   # Linux; repetir após recompilar
+npm run tauri dev
+```
+
+No Windows, o usuário instala o Npcap (não redistribuído). Não validado no Windows nem com tráfego real; **não há autorização da SBI**. Detalhes, permissões, formato do log e limites: [docs/captura-ao-vivo.md](docs/captura-ao-vivo.md).
+
 ## Modelo de dados
 
 - **Item:** identificado pelo `UniqueName` do Albion (`T5_BAG@1`). Tier e enchantment são derivados do ID; itens como `UNIQUE_HIDEOUT` não têm tier.
@@ -111,7 +123,7 @@ Política: sem validação offline inventada; indisponibilidade é estado distin
 ## Referências e limites
 
 - [Loot-Logger-Albion-Online](https://github.com/Kazxye/Loot-Logger-Albion-Online) (projeto anterior) e [AlbionOnline-StatisticsAnalysis](https://github.com/Triky313/AlbionOnline-StatisticsAnalysis) são referências de fatos do protocolo e regras do jogo. O segundo é **GPL-3.0**: não copiar nem traduzir código dele para o Kalbion fechado.
-- Os [termos da SBI](https://albiononline.com/terms_and_conditions) restringem software de terceiros e interceptação de dados. Não há autorização obtida para captura, OCR ou monetização. Captura, quando existir, será um helper isolado com privilégios mínimos; o domínio não conhece Photon.
+- Os [termos da SBI](https://albiononline.com/terms_and_conditions) restringem software de terceiros e interceptação de dados. Não há autorização obtida para captura, OCR ou monetização. A captura ao vivo usa um helper isolado com privilégio mínimo (`cap_net_raw`); o domínio não conhece Photon.
 - Antes de redistribuir Npcap, consultar a [licença OEM](https://npcap.com/oem/).
 
 ## Verificações
@@ -140,12 +152,14 @@ KALBION_TEST_DIALOG_DIR=/tmp/kalbion-dialogs node scripts/desktop-smoke.mjs   # 
 
 `KALBION_TEST_DIALOG_DIR` também só vale em debug: os diálogos de abrir arquivo (catálogo e captura) devolvem `items.json` e `capture.pcap` dessa pasta, que o script preenche com as fixtures sintéticas de `crates/kalbion-capture/tests/fixtures`.
 
+Captura ao vivo (Linux, ajudante com permissão de captura): `node scripts/live-smoke.mjs` com o mesmo `KALBION_TEST_DIALOG_DIR`. Envia os datagramas sintéticos da fixture pela interface `lo` a partir da porta 5056 e confere painel, linhas gravadas, parada e log de diagnóstico.
+
 `KALBION_ADP_URL` só tem efeito em builds de debug: aponta o app para o ADP simulado que o próprio script sobe na porta 4448, então o teste de preços é determinístico e não usa a rede. Capturas de tela pelo WebKitWebDriver podem exigir `GDK_BACKEND=x11` no tauri-driver.
 
 O teste usa a interface e o IPC reais: sessão, simulação, ícones (carregados ou genéricos, nunca quebrados), preço manual, atualização de preços pelo ADP simulado (manual prevalece, quality desconhecida fica sem preço, idade exibida), importação de catálogo e de captura sintética (e sua reimportação sem duplicar), totais por jogador, ledger, divisão, filtros, importação inválida e replay, loot manual pelo catálogo, anulação, encerramento, configurações e persistência após reiniciar o processo. O diálogo nativo de arquivos (export e importação de catálogo) não é automatizado.
 
 ## Estado
 
-- Implementado: sessões, loot com fontes explícitas, ícones oficiais com cache, importação v1/v2, deduplicação persistente, filtros e totais, preços manuais por item e quality, preços do Albion Data Project (manual prevalece), importação offline de capturas PCAP (experimental, só testada com dados sintéticos), anulação de loot, ledger com estorno, divisão, catálogo importável, exportação JSON/CSV, configurações, log em arquivo.
+- Implementado: sessões, loot com fontes explícitas, ícones oficiais com cache, importação v1/v2, deduplicação persistente, filtros e totais, preços manuais por item e quality, preços do Albion Data Project (manual prevalece), importação offline de capturas PCAP e captura ao vivo (experimentais, só testadas com dados sintéticos), anulação de loot, ledger com estorno, divisão, catálogo importável, exportação JSON/CSV, configurações, log em arquivo.
 - Não implementado (páginas marcadas na interface): crafting, financeiro consolidado, composições.
 - Pendente: KeyAuth real, validação no Windows, paginação de sessões muito grandes.

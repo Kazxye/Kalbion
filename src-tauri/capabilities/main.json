@@ -7,6 +7,10 @@
     "allow-export-session",
     "allow-import-catalog",
     "allow-refresh-market-prices",
-    "allow-import-capture"
+    "allow-import-capture",
+    "allow-live-capture-interfaces",
+    "allow-start-live-capture",
+    "allow-stop-live-capture",
+    "allow-live-capture-status"
   ]
 }

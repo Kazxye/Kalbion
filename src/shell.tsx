@@ -11,6 +11,7 @@ import {
   Lock,
   LockOpen,
   Plus,
+  Radio,
   Scale,
   Settings2,
   Shield,
@@ -153,8 +154,8 @@ export function Sidebar({
             <FlaskConical size={14} aria-hidden />
             Modo desenvolvimento
           </strong>
-          Sem captura do jogo. Dados simulados, manuais ou importados, sempre
-          identificados na tabela.
+          Captura ao vivo experimental, ainda não validada com o jogo real. A
+          origem de cada loot aparece na tabela.
         </p>
         <span className="version">Kalbion 0.1.0</span>
       </div>
@@ -186,6 +187,8 @@ export function SessionHeader({
   exportAs,
   openImport,
   openCapture,
+  openLive,
+  capturing,
 }: {
   sessions: Session[];
   session: Session | undefined;
@@ -196,6 +199,9 @@ export function SessionHeader({
   exportAs: (format: 'csv' | 'json') => void;
   openImport: () => void;
   openCapture: () => void;
+  openLive: () => void;
+  /** A live capture is running (for any session); only one can run at a time. */
+  capturing: boolean;
 }) {
   const closed = !!session?.closed_at;
   return (
@@ -284,6 +290,13 @@ export function SessionHeader({
               onSelect: openCapture,
               disabled: closed,
               hint: 'reabra a sessão',
+            },
+            {
+              label: 'Captura ao vivo',
+              icon: <Radio size={16} aria-hidden />,
+              onSelect: openLive,
+              disabled: closed || capturing,
+              hint: capturing ? 'já em andamento' : 'reabra a sessão',
             },
           ]}
         />

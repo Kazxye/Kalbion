@@ -1133,3 +1133,142 @@ tr.voided .item-icon {
 td > .tag {
   margin-left: var(--space-2);
 }
+
+/* Live capture */
+.live-panel {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  padding: var(--space-3) var(--space-5);
+  border-bottom: 1px solid var(--rule);
+  background: var(--surface);
+}
+.live-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2) var(--space-5);
+}
+.live-state {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+  font-weight: 650;
+}
+.live-panel.running .live-state {
+  color: var(--ok);
+}
+.live-panel.failed .live-state {
+  color: var(--danger);
+}
+.live-panel.stopped .live-state {
+  color: var(--muted);
+}
+.live-counts {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-1) var(--space-4);
+  margin: 0;
+  flex: 1;
+}
+.live-counts div {
+  display: flex;
+  align-items: baseline;
+  gap: var(--space-1);
+}
+.live-counts dt {
+  font-size: var(--text-xs);
+  color: var(--faint);
+}
+.live-counts dd {
+  margin: 0;
+  font-variant-numeric: tabular-nums;
+  color: var(--silver);
+}
+.live-error {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--space-2);
+  margin: 0;
+  padding: var(--space-2);
+  border-radius: var(--radius-control);
+  background: var(--danger-soft);
+  color: var(--danger);
+  font-size: var(--text-sm);
+}
+.live-error svg {
+  flex-shrink: 0;
+  margin-top: 2px;
+}
+.selectable {
+  user-select: text;
+  overflow-wrap: anywhere;
+}
+.live-interface {
+  display: flex;
+  gap: var(--space-2);
+}
+.live-interface select {
+  flex: 1;
+  min-width: 0;
+}
+.checkbox {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--space-2);
+  font-size: var(--text-sm);
+}
+.checkbox input {
+  margin-top: 3px;
+}
+.live-recent summary {
+  cursor: pointer;
+  font-size: var(--text-sm);
+  color: var(--muted);
+}
+.live-recent ol {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  max-height: 220px;
+  margin: var(--space-2) 0 0;
+  padding: 0;
+  overflow-y: auto;
+  list-style: none;
+}
+.live-recent li {
+  display: grid;
+  grid-template-columns: 72px minmax(0, 1fr) 64px 140px 150px;
+  align-items: center;
+  gap: var(--space-2);
+  font-size: var(--text-sm);
+  font-variant-numeric: tabular-nums;
+}
+.live-recent time {
+  color: var(--faint);
+}
+.live-item {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+  min-width: 0;
+}
+.live-item > span:not(.tier-badge) {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.live-item.unknown {
+  color: var(--warn);
+}
+.live-outcome {
+  font-size: var(--text-xs);
+  color: var(--muted);
+}
+.live-recent li[data-outcome='inserted'] .live-outcome {
+  color: var(--ok);
+}
+.live-recent li[data-outcome='unknown_item'] .live-outcome,
+.live-recent li[data-outcome='error'] .live-outcome {
+  color: var(--danger);
+}

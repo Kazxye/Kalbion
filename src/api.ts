@@ -1,5 +1,11 @@
 import { invoke, isTauri } from '@tauri-apps/api/core';
-import type { CaptureSummary, CatalogInfo, MarketRefresh } from './types';
+import type {
+  CaptureSummary,
+  CatalogInfo,
+  LiveInterface,
+  LiveStatus,
+  MarketRefresh,
+} from './types';
 
 export const desktop = isTauri();
 const disconnected =
@@ -29,4 +35,31 @@ export async function refreshMarketPrices(sessionId: string) {
 export async function importCapture(sessionId: string, roster: string[]) {
   if (!desktop) throw new Error(disconnected);
   return invoke<CaptureSummary | null>('import_capture', { sessionId, roster });
+}
+/** Interfaces listed by the capture helper (the only privileged part of Kalbion). */
+export async function liveCaptureInterfaces() {
+  if (!desktop) throw new Error(disconnected);
+  return invoke<LiveInterface[]>('live_capture_interfaces');
+}
+export async function startLiveCapture(
+  sessionId: string,
+  roster: string[],
+  networkInterface: string,
+  trace: boolean,
+) {
+  if (!desktop) throw new Error(disconnected);
+  return invoke<LiveStatus>('start_live_capture', {
+    sessionId,
+    roster,
+    interface: networkInterface,
+    trace,
+  });
+}
+export async function stopLiveCapture() {
+  if (!desktop) throw new Error(disconnected);
+  return invoke<LiveStatus>('stop_live_capture');
+}
+export async function liveCaptureStatus() {
+  if (!desktop) throw new Error(disconnected);
+  return invoke<LiveStatus>('live_capture_status');
 }

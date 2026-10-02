@@ -55,7 +55,11 @@ manuais abaixo.
 - [ ] Validar com uma captura real gravada legitimamente pelo dono e comparar com o que aconteceu no jogo.
 - [ ] Ticket à SBI (support@albiononline.com) com as perguntas da pesquisa; nada de distribuir ou cobrar antes da resposta.
 - [ ] Qualidade do item: correlacionar com eventos 30/32/98/99 (ainda não implementado).
-- [ ] Captura ao vivo: só depois da resposta da SBI; helper separado com privilégio mínimo; licença do Npcap no Windows.
+- [x] Captura ao vivo experimental ([docs/captura-ao-vivo.md](docs/captura-ao-vivo.md)): helper `kalbion-sniffer` com `cap_net_raw`, mesmo decoder da importação, painel de status e log de diagnóstico. Testada com o app real e tráfego sintético em `lo`.
+- [ ] Validar a captura ao vivo jogando: loot próprio, de grupo, baú, silver, item empilhado; conferir pelo log de diagnóstico.
+- [ ] Empacotar o helper (sidecar), `setcap` no pós-instalação Linux, detecção do Npcap no instalador Windows; validar no Windows.
+- [ ] Orçamento total de bytes para fragmentos pendentes; descartar a capability do helper após abrir a interface.
+- [ ] Distribuição ou cobrança só depois da resposta da SBI.
 
 ## Notas de ambiente
 

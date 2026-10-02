@@ -145,3 +145,58 @@ export interface InsertResult {
   inserted: number;
   duplicates: number;
 }
+export interface LiveInterface {
+  name: string;
+  description: string | null;
+  addresses: string[];
+  loopback: boolean;
+  up: boolean;
+  running: boolean;
+}
+export type LiveOutcome =
+  | 'inserted'
+  | 'duplicate'
+  | 'outside_roster'
+  | 'unknown_item'
+  | 'invalid_player'
+  | 'error';
+export interface RecentLoot {
+  at: string;
+  /** Only players on the roster are named. */
+  player: string | null;
+  item_index: number;
+  item: Item | null;
+  quantity: number;
+  outcome: LiveOutcome;
+}
+export interface LiveDiagnostics {
+  packets: number;
+  udp_from_game_server: number;
+  photon_packets: number;
+  encrypted_packets: number;
+  encrypted_messages: number;
+  events: number;
+  events_undecodable: number;
+  loot_events: number;
+  loot_silver: number;
+  loot_malformed: number;
+  fragments_dropped: number;
+}
+export interface LiveStatus {
+  state: 'idle' | 'running' | 'stopped' | 'failed';
+  session_id: string | null;
+  interface: string | null;
+  started_at: string | null;
+  stopped_at: string | null;
+  error: string | null;
+  inserted: number;
+  duplicates: number;
+  outside_roster: number;
+  invalid_players: number;
+  unknown_items: Record<string, number>;
+  dropped_by_capture: number;
+  recent: RecentLoot[];
+  trace_path: string | null;
+  trace_full: boolean;
+  diagnostics: LiveDiagnostics | null;
+}

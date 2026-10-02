@@ -8,10 +8,10 @@ description = "Offline decoder: Albion Online loot events from PCAP files record
 kalbion-core = { path = "../kalbion-core" }
 chrono = "0.4"
 serde = { version = "1", features = ["derive"] }
+serde_json = "1"
 sha2 = "0.10"
 thiserror = "2"
 tracing = "0.1"
 
 [dev-dependencies]
-serde_json = "1"
 tempfile = "3"

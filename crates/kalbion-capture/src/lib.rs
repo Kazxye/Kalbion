@@ -11,6 +11,7 @@ pub mod net;
 pub mod pcap;
 pub mod photon;
 pub mod protocol18;
+pub mod trace;
 
 use chrono::{DateTime, SecondsFormat, Utc};
 use serde::Serialize;
@@ -108,67 +109,103 @@ pub struct Capture {
 fn hex(bytes: &[u8]) -> String {
     bytes.iter().map(|byte| format!("{byte:02x}")).collect()
 }
-fn timestamp(nanoseconds: i128) -> Option<String> {
+/// Nanoseconds since the Unix epoch as RFC 3339 UTC with microseconds.
+pub fn timestamp(nanoseconds: i128) -> Option<String> {
     let seconds = i64::try_from(nanoseconds.div_euclid(1_000_000_000)).ok()?;
     let nanos = nanoseconds.rem_euclid(1_000_000_000) as u32;
     DateTime::<Utc>::from_timestamp(seconds, nanos)
         .map(|time| time.to_rfc3339_opts(SecondsFormat::Micros, true))
 }
 
-/// Decodes a whole capture file. Fails, importing nothing, when the file is not a capture,
-/// holds no Albion game traffic, predates the codebook, or its loot events do not have the
-/// layout the codebook expects.
-pub fn decode(source: impl Read, limits: Limits) -> Result<Capture, CaptureError> {
-    let mut reader = pcap::Reader::new(source, limits.max_packet_bytes, limits.max_file_bytes)?;
-    let mut diagnostics = Diagnostics {
-        decoder_version: DECODER_VERSION,
-        codebook_from: albion::CODEBOOK_FROM,
-        codebook_observed_until: albion::CODEBOOK_OBSERVED_UNTIL,
-        file_format: Some(reader.format()),
-        ..Diagnostics::default()
-    };
-    let mut decoder = photon::Decoder::new();
-    let mut observations = Vec::new();
-    let mut messages = Vec::new();
-    let mut first_ns = None;
-    let mut last_ns = None;
-    while let Some(frame) = reader.next_frame()? {
+/// What the pipeline saw, handed to an optional observer (the live diagnostic trace).
+pub enum Seen<'a> {
+    Event {
+        timestamp_ns: i128,
+        position: photon::Position,
+        event: &'a protocol18::Event,
+        classified: &'a albion::Classified,
+    },
+    Undecodable {
+        timestamp_ns: i128,
+        position: photon::Position,
+        code: Option<u16>,
+        error: protocol18::DecodeError,
+    },
+}
+
+/// Frame-by-frame decoding shared by the file import and the live capture: link/IP/UDP,
+/// Photon transport, Protocol18 and the loot event. Keeps the transport state (sequence
+/// windows, pending fragments) between frames.
+pub struct Pipeline {
+    decoder: photon::Decoder,
+    messages: Vec<photon::EventMessage>,
+    pub diagnostics: Diagnostics,
+    first_ns: Option<i128>,
+    last_ns: Option<i128>,
+}
+
+impl Pipeline {
+    pub fn new(file_format: Option<pcap::Format>) -> Self {
+        Self {
+            decoder: photon::Decoder::new(),
+            messages: Vec::new(),
+            diagnostics: Diagnostics {
+                decoder_version: DECODER_VERSION,
+                codebook_from: albion::CODEBOOK_FROM,
+                codebook_observed_until: albion::CODEBOOK_OBSERVED_UNTIL,
+                file_format,
+                ..Diagnostics::default()
+            },
+            first_ns: None,
+            last_ns: None,
+        }
+    }
+
+    /// Decodes one captured frame. Loot pick-ups are appended to `observations`; every
+    /// decoded or undecodable event is also shown to `observe`.
+    pub fn frame(
+        &mut self,
+        frame: &pcap::Frame,
+        observations: &mut Vec<Observation>,
+        observe: &mut dyn FnMut(Seen),
+    ) -> Result<(), CaptureError> {
+        let diagnostics = &mut self.diagnostics;
         diagnostics.packets += 1;
         if frame.cut_short {
             diagnostics.packets_cut_short += 1;
         }
-        first_ns = first_ns.or(Some(frame.timestamp_ns));
-        last_ns = Some(frame.timestamp_ns);
+        self.first_ns = self.first_ns.or(Some(frame.timestamp_ns));
+        self.last_ns = Some(frame.timestamp_ns);
         let udp = match net::udp(frame.link_type, &frame.data) {
             Ok(udp) => udp,
             Err(net::Skip::LinkType) => {
                 diagnostics.link_types_skipped += 1;
-                continue;
+                return Ok(());
             }
             Err(net::Skip::NotUdp) => {
                 diagnostics.not_udp += 1;
-                continue;
+                return Ok(());
             }
             Err(net::Skip::IpFragment) => {
                 diagnostics.ip_fragments += 1;
-                continue;
+                return Ok(());
             }
             Err(net::Skip::Truncated) => {
                 diagnostics.truncated_packets += 1;
-                continue;
+                return Ok(());
             }
             Err(net::Skip::Malformed) => {
                 diagnostics.malformed_packets += 1;
-                continue;
+                return Ok(());
             }
         };
         // Loot events travel from the game server to the client.
         if udp.source.port != GAME_PORT {
-            continue;
+            return Ok(());
         }
         diagnostics.udp_from_game_server += 1;
-        messages.clear();
-        decoder.push(
+        self.messages.clear();
+        self.decoder.push(
             &photon::Datagram {
                 packet: frame.index,
                 timestamp_ns: frame.timestamp_ns,
@@ -176,10 +213,10 @@ pub fn decode(source: impl Read, limits: Limits) -> Result<Capture, CaptureError
                 destination: udp.destination,
                 payload: udp.payload,
             },
-            &mut diagnostics,
-            &mut messages,
+            diagnostics,
+            &mut self.messages,
         );
-        for message in messages.drain(..) {
+        for message in self.messages.drain(..) {
             diagnostics.events += 1;
             let event = match protocol18::decode_event(&message.data) {
                 Ok(event) => event,
@@ -189,8 +226,9 @@ pub fn decode(source: impl Read, limits: Limits) -> Result<Capture, CaptureError
                         .undecodable_reasons
                         .entry(format!("{error:?}"))
                         .or_default() += 1;
+                    let code = albion::event_code(&partial);
                     // A loot event that failed after its code was read still counts as one.
-                    if albion::event_code(&partial) == Some(albion::LOOT_EVENT) {
+                    if code == Some(albion::LOOT_EVENT) {
                         diagnostics.loot_events += 1;
                         diagnostics.loot_malformed += 1;
                         *diagnostics
@@ -198,10 +236,17 @@ pub fn decode(source: impl Read, limits: Limits) -> Result<Capture, CaptureError
                             .entry(format!("decodificação: {error:?}"))
                             .or_default() += 1;
                     }
+                    observe(Seen::Undecodable {
+                        timestamp_ns: message.timestamp_ns,
+                        position: message.position,
+                        code,
+                        error,
+                    });
                     continue;
                 }
             };
-            match albion::classify(&event) {
+            let classified = albion::classify(&event);
+            match &classified {
                 albion::Classified::Loot(loot) => {
                     diagnostics.loot_events += 1;
                     let occurred_at = timestamp(message.timestamp_ns).ok_or_else(|| {
@@ -213,7 +258,7 @@ pub fn decode(source: impl Read, limits: Limits) -> Result<Capture, CaptureError
                     observations.push(Observation {
                         position: message.position,
                         occurred_at,
-                        loot,
+                        loot: loot.clone(),
                     });
                 }
                 albion::Classified::Silver => {
@@ -231,17 +276,42 @@ pub fn decode(source: impl Read, limits: Limits) -> Result<Capture, CaptureError
                 albion::Classified::Other(code) => {
                     *diagnostics
                         .unrecognized_event_codes
-                        .entry(code)
+                        .entry(*code)
                         .or_default() += 1;
                 }
                 albion::Classified::NoCode => diagnostics.events_without_code += 1,
             }
+            observe(Seen::Event {
+                timestamp_ns: message.timestamp_ns,
+                position: message.position,
+                event: &event,
+                classified: &classified,
+            });
         }
+        Ok(())
     }
+
+    /// Fills the end-of-stream counts: incomplete fragments and the first/last packet times.
+    pub fn finish(&mut self) {
+        self.diagnostics.fragments_incomplete = self.decoder.incomplete() as u64;
+        self.diagnostics.first_packet_at = self.first_ns.and_then(timestamp);
+        self.diagnostics.last_packet_at = self.last_ns.and_then(timestamp);
+    }
+}
+
+/// Decodes a whole capture file. Fails, importing nothing, when the file is not a capture,
+/// holds no Albion game traffic, predates the codebook, or its loot events do not have the
+/// layout the codebook expects.
+pub fn decode(source: impl Read, limits: Limits) -> Result<Capture, CaptureError> {
+    let mut reader = pcap::Reader::new(source, limits.max_packet_bytes, limits.max_file_bytes)?;
+    let mut pipeline = Pipeline::new(Some(reader.format()));
+    let mut observations = Vec::new();
+    while let Some(frame) = reader.next_frame()? {
+        pipeline.frame(&frame, &mut observations, &mut |_| {})?;
+    }
+    pipeline.finish();
+    let mut diagnostics = pipeline.diagnostics;
     diagnostics.file_truncated = reader.truncated;
-    diagnostics.fragments_incomplete = decoder.incomplete() as u64;
-    diagnostics.first_packet_at = first_ns.and_then(timestamp);
-    diagnostics.last_packet_at = last_ns.and_then(timestamp);
     let (fingerprint, file_sha256) = reader.finish()?;
     check_support(&diagnostics)?;
     Ok(Capture {

@@ -5,8 +5,11 @@ import {
   exportSession,
   importCatalog,
   importCapture,
+  liveCaptureStatus,
   refreshMarketPrices,
   request,
+  startLiveCapture,
+  stopLiveCapture,
 } from './api';
 import { CaptureForm, captureSummary } from './capture';
 import {
@@ -33,6 +36,7 @@ import {
   ManualForm,
   PlayersView,
 } from './loot';
+import { LiveCaptureForm, LivePanel } from './live';
 import { FuturePage, SettingsPage } from './settings';
 import {
   SessionHeader,
@@ -45,6 +49,7 @@ import type {
   Bootstrap,
   Filter,
   InsertResult,
+  LiveStatus,
   LootRow,
   Session,
   Share,
@@ -52,7 +57,16 @@ import type {
 } from './types';
 
 type Modal =
-  'session' | 'manual' | 'import' | 'capture' | 'ledger' | 'split' | null;
+  | 'session'
+  | 'manual'
+  | 'import'
+  | 'capture'
+  | 'live'
+  | 'ledger'
+  | 'split'
+  | null;
+/** How often the live capture status is read while a capture runs. */
+const LIVE_POLL_MS = 1000;
 const sessionViews: ViewId[] = ['loot', 'players', 'ledger'];
 
 export default function App() {
@@ -69,6 +83,8 @@ export default function App() {
   const [error, setError] = useState('');
   const [notice, setNotice] = useState('');
   const [revision, setRevision] = useState(0);
+  const [live, setLive] = useState<LiveStatus | null>(null);
+  const liveInserted = useRef(0);
   const sequence = useRef(0);
   const mutation = useRef(false);
   const refresh = useCallback(async () => {
@@ -106,6 +122,29 @@ export default function App() {
       sequence.current++;
     };
   }, [active, filter, revision]);
+  useEffect(() => {
+    if (!desktop) return;
+    liveCaptureStatus()
+      .then(setLive)
+      .catch(() => setLive(null));
+  }, []);
+  const liveRunning = live?.state === 'running';
+  useEffect(() => {
+    if (!liveRunning) return;
+    const timer = setInterval(() => {
+      liveCaptureStatus()
+        .then((status) => {
+          setLive(status);
+          // New loot was stored: reload the session view and totals.
+          if (status.inserted !== liveInserted.current) {
+            liveInserted.current = status.inserted;
+            setRevision((value) => value + 1);
+          }
+        })
+        .catch((reason) => setError(String(reason)));
+    }, LIVE_POLL_MS);
+    return () => clearInterval(timer);
+  }, [liveRunning]);
   const closeDialogs = useCallback(() => {
     setModal(null);
     setPricing(null);
@@ -286,9 +325,24 @@ export default function App() {
               exportAs={exportAs}
               openImport={() => setModal('import')}
               openCapture={() => setModal('capture')}
+              openLive={() => setModal('live')}
+              capturing={liveRunning}
             />
           )}
           {isSessionView && currentView && <Summary view={currentView} />}
+          {isSessionView && live && live.session_id === active && (
+            <LivePanel
+              status={live}
+              busy={busy}
+              stop={() =>
+                void act(async () => {
+                  const status = await stopLiveCapture();
+                  setLive(status);
+                  return `Captura parada: ${status.inserted} loots gravados.`;
+                })
+              }
+            />
+          )}
           <div
             className={`content ${isSessionView && page === 'loot' ? '' : 'scroll'}`}
           >
@@ -342,6 +396,7 @@ export default function App() {
               manual: 'Registrar loot',
               import: 'Importar JSON',
               capture: 'Importar captura de loot',
+              live: 'Captura ao vivo',
               ledger: 'Novo lançamento',
               split: 'Dividir saldo',
             }[modal]
@@ -426,6 +481,25 @@ export default function App() {
                   return result
                     ? captureSummary(result)
                     : 'Importação de captura cancelada.';
+                })
+              }
+            />
+          )}
+          {modal === 'live' && (
+            <LiveCaptureForm
+              players={Object.keys(currentView?.full_totals.players ?? {})}
+              busy={busy}
+              submit={(roster, networkInterface, trace) =>
+                void act(async () => {
+                  const status = await startLiveCapture(
+                    active,
+                    roster,
+                    networkInterface,
+                    trace,
+                  );
+                  liveInserted.current = status.inserted;
+                  setLive(status);
+                  return `Captura iniciada em ${networkInterface}.`;
                 })
               }
             />

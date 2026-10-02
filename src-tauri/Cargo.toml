@@ -16,6 +16,8 @@ serde_json = "1"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["json"] }
 rfd = "0.15"
+chrono = "0.4"
+uuid = { version = "1", features = ["v4"] }
 
 [features]
 custom-protocol = ["tauri/custom-protocol"]
