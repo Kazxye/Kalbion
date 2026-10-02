@@ -1,5 +1,5 @@
 import { invoke, isTauri } from '@tauri-apps/api/core';
-import type { CatalogInfo, MarketRefresh } from './types';
+import type { CaptureSummary, CatalogInfo, MarketRefresh } from './types';
 
 export const desktop = isTauri();
 const disconnected =
@@ -24,4 +24,9 @@ export async function importCatalog() {
 export async function refreshMarketPrices(sessionId: string) {
   if (!desktop) throw new Error(disconnected);
   return invoke<MarketRefresh>('refresh_market_prices', { sessionId });
+}
+/** Offline import of a capture file; resolves to null when the dialog is cancelled. */
+export async function importCapture(sessionId: string, roster: string[]) {
+  if (!desktop) throw new Error(disconnected);
+  return invoke<CaptureSummary | null>('import_capture', { sessionId, roster });
 }

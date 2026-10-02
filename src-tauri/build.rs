@@ -5,6 +5,7 @@ fn main() {
             "export_session",
             "import_catalog",
             "refresh_market_prices",
+            "import_capture",
         ]),
     ))
     .expect("Tauri build failed");

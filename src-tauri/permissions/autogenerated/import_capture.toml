@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-import-capture"
+description = "Enables the import_capture command without any pre-configured scope."
+commands.allow = ["import_capture"]
+
+[[permission]]
+identifier = "deny-import-capture"
+description = "Denies the import_capture command without any pre-configured scope."
+commands.deny = ["import_capture"]

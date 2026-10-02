@@ -3,6 +3,7 @@ import {
   Boxes,
   CircleDot,
   Download,
+  FileArchive,
   FileUp,
   FlaskConical,
   Hammer,
@@ -184,6 +185,7 @@ export function SessionHeader({
   toggleClosed,
   exportAs,
   openImport,
+  openCapture,
 }: {
   sessions: Session[];
   session: Session | undefined;
@@ -193,6 +195,7 @@ export function SessionHeader({
   toggleClosed: () => void;
   exportAs: (format: 'csv' | 'json') => void;
   openImport: () => void;
+  openCapture: () => void;
 }) {
   const closed = !!session?.closed_at;
   return (
@@ -272,6 +275,13 @@ export function SessionHeader({
               label: 'Importar JSON',
               icon: <FileUp size={16} aria-hidden />,
               onSelect: openImport,
+              disabled: closed,
+              hint: 'reabra a sessão',
+            },
+            {
+              label: 'Importar captura (PCAP)',
+              icon: <FileArchive size={16} aria-hidden />,
+              onSelect: openCapture,
               disabled: closed,
               hint: 'reabra a sessão',
             },

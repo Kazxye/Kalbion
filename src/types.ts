@@ -113,6 +113,28 @@ export interface Share {
   player: string;
   silver: number;
 }
+export interface CaptureSummary {
+  file_label: string;
+  inserted: number;
+  duplicates: number;
+  report: {
+    loot_observed: number;
+    converted: number;
+    outside_roster: number;
+    unknown_items: Record<string, number>;
+    invalid_players: number;
+  };
+  diagnostics: {
+    decoder_version: string;
+    codebook_observed_until: string;
+    file_truncated: boolean;
+    loot_events: number;
+    loot_silver: number;
+    loot_malformed: number;
+  };
+  /** Captured after the latest date the decoder's event codes were observed. */
+  newer_than_codebook: boolean;
+}
 export interface MarketRefresh {
   updated: number;
   unavailable: number;

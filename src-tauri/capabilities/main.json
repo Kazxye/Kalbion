@@ -6,6 +6,7 @@
     "allow-dispatch",
     "allow-export-session",
     "allow-import-catalog",
-    "allow-refresh-market-prices"
+    "allow-refresh-market-prices",
+    "allow-import-capture"
   ]
 }

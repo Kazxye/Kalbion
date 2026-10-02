@@ -189,6 +189,12 @@
           "markdownDescription": "Enables the export_session command without any pre-configured scope."
         },
         {
+          "description": "Enables the import_capture command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-import-capture",
+          "markdownDescription": "Enables the import_capture command without any pre-configured scope."
+        },
+        {
           "description": "Enables the import_catalog command without any pre-configured scope.",
           "type": "string",
           "const": "allow-import-catalog",
@@ -211,6 +217,12 @@
           "type": "string",
           "const": "deny-export-session",
           "markdownDescription": "Denies the export_session command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the import_capture command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-import-capture",
+          "markdownDescription": "Denies the import_capture command without any pre-configured scope."
         },
         {
           "description": "Denies the import_catalog command without any pre-configured scope.",

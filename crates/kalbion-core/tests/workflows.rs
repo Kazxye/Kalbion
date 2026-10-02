@@ -638,7 +638,7 @@ fn version_three_database_moves_resources_to_no_quality() {
     let version: u32 = connection
         .query_row("PRAGMA user_version", [], |row| row.get(0))
         .unwrap();
-    assert_eq!(version, 4);
+    assert_eq!(version, 5);
     connection
         .execute(
             "INSERT INTO item_prices VALUES ('s3', 'T4_WOOD', 0, 5, 'albion_data', 'americas',

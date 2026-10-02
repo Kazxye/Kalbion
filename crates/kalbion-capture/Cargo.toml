@@ -1,0 +1,17 @@
+[package]
+name = "kalbion-capture"
+version = "0.1.0"
+edition = "2021"
+description = "Offline decoder: Albion Online loot events from PCAP files recorded by the user"
+
+[dependencies]
+kalbion-core = { path = "../kalbion-core" }
+chrono = "0.4"
+serde = { version = "1", features = ["derive"] }
+sha2 = "0.10"
+thiserror = "2"
+tracing = "0.1"
+
+[dev-dependencies]
+serde_json = "1"
+tempfile = "3"

@@ -1,6 +1,6 @@
 # Kalbion
 
-Companion desktop local para Albion Online: Tauri 2 + Rust + React/TypeScript + Vite + Tailwind + SQLite. Interface em português, tema escuro, sem servidor de aplicação nem navegador externo. A versão de desenvolvimento usa somente dados simulados, manuais ou importados; não há captura do jogo.
+Companion desktop local para Albion Online: Tauri 2 + Rust + React/TypeScript + Vite + Tailwind + SQLite. Interface em português, tema escuro, sem servidor de aplicação nem navegador externo. A versão de desenvolvimento usa somente dados simulados, manuais ou importados (inclusive arquivos de captura gravados pelo usuário, em caráter experimental); o Kalbion não captura tráfego do jogo.
 
 ## Executar
 
@@ -60,6 +60,10 @@ Os ícones vêm do serviço oficial de renderização da SBI (`render.albiononli
 - **Instantâneo:** como o preço manual, o preço ADP fica gravado na sessão (`recorded_at` e `observed_at`); uma sessão encerrada não muda com o mercado até alguém atualizar de novo.
 - **Rede:** o core Rust fala com um host fixo por servidor (`west`, `europe` e `east.albion-online-data.com`), somente HTTPS, sem redirecionamentos, timeout de 15 s por requisição (nova tentativa imediata só quando a conexão falha em menos de 2 s), resposta limitada a 4 MB e listas de itens divididas abaixo do limite de URL; sessões com muitos itens fazem várias requisições em sequência. Linhas malformadas, com preço negativo ou data ilegível ou futura são ignoradas e contadas no log; havendo duplicatas, vale a menor oferta. Loot anulado não é consultado. Cotações (inclusive "sem oferta") ficam 5 minutos em cache de memória. HTTP 429 pausa todas as consultas pelo `Retry-After` (padrão 60 s, máximo 10 min). A consulta roda fora do lock do banco, com comando IPC próprio (`refresh_market_prices`). Falhas aparecem como "indisponível", nunca como preço.
 
+## Captura offline (experimental)
+
+**Ações da sessão → Importar captura (PCAP)** lê um arquivo PCAP/PCAPNG gravado pelo próprio usuário e importa o loot (evento `EvOtherGrabbedLoot`) dos jogadores de uma lista informada. Nada é capturado pelo Kalbion: sem drivers, sem privilégios, sem rede. Requer o catálogo `items.json` importado; a qualidade fica desconhecida; reimportar o mesmo arquivo não duplica. Testado só com capturas sintéticas; **não há autorização da SBI** para este uso. Fontes, campos comprovados, limites e testes: [docs/captura-offline.md](docs/captura-offline.md).
+
 ## Modelo de dados
 
 - **Item:** identificado pelo `UniqueName` do Albion (`T5_BAG@1`). Tier e enchantment são derivados do ID; itens como `UNIQUE_HIDEOUT` não têm tier.
@@ -116,6 +120,7 @@ Política: sem validação offline inventada; indisponibilidade é estado distin
 npm run build                                       # typecheck + Vite
 cargo test --workspace
 cargo test -p kalbion-core --test market -- --ignored   # opcional: ADP real; exige cotação de madeira e tábuas
+KALBION_UPDATE_FIXTURES=1 cargo test -p kalbion-capture --test fixtures   # só ao mudar o construtor de fixtures
 cargo clippy --workspace --all-targets -- -D warnings
 cargo fmt --all -- --check
 npx prettier --check src scripts
@@ -126,17 +131,21 @@ Teste desktop (Linux, WebKitWebDriver instalado), sempre com diretório de dados
 ```bash
 cargo install tauri-driver --locked
 npm run tauri build -- --debug --no-bundle
+mkdir -p /tmp/kalbion-dialogs
 XDG_DATA_HOME=/tmp/kalbion-test XDG_CACHE_HOME=/tmp/kalbion-test-cache \
-  KALBION_ADP_URL=http://127.0.0.1:4448 tauri-driver --port 4446 --native-port 4447   # outro terminal
-node scripts/desktop-smoke.mjs     # KALBION_SCREENSHOTS=1 grava capturas em /tmp (opcional)
+  KALBION_ADP_URL=http://127.0.0.1:4448 KALBION_TEST_DIALOG_DIR=/tmp/kalbion-dialogs \
+  tauri-driver --port 4446 --native-port 4447                                         # outro terminal
+KALBION_TEST_DIALOG_DIR=/tmp/kalbion-dialogs node scripts/desktop-smoke.mjs   # KALBION_SCREENSHOTS=1 grava capturas em /tmp
 ```
+
+`KALBION_TEST_DIALOG_DIR` também só vale em debug: os diálogos de abrir arquivo (catálogo e captura) devolvem `items.json` e `capture.pcap` dessa pasta, que o script preenche com as fixtures sintéticas de `crates/kalbion-capture/tests/fixtures`.
 
 `KALBION_ADP_URL` só tem efeito em builds de debug: aponta o app para o ADP simulado que o próprio script sobe na porta 4448, então o teste de preços é determinístico e não usa a rede. Capturas de tela pelo WebKitWebDriver podem exigir `GDK_BACKEND=x11` no tauri-driver.
 
-O teste usa a interface e o IPC reais: sessão, simulação, ícones (carregados ou genéricos, nunca quebrados), preço manual, atualização de preços pelo ADP simulado (manual prevalece, quality desconhecida fica sem preço, idade exibida), totais por jogador, ledger, divisão, filtros, importação inválida e replay, loot manual pelo catálogo, anulação, encerramento, configurações e persistência após reiniciar o processo. O diálogo nativo de arquivos (export e importação de catálogo) não é automatizado.
+O teste usa a interface e o IPC reais: sessão, simulação, ícones (carregados ou genéricos, nunca quebrados), preço manual, atualização de preços pelo ADP simulado (manual prevalece, quality desconhecida fica sem preço, idade exibida), importação de catálogo e de captura sintética (e sua reimportação sem duplicar), totais por jogador, ledger, divisão, filtros, importação inválida e replay, loot manual pelo catálogo, anulação, encerramento, configurações e persistência após reiniciar o processo. O diálogo nativo de arquivos (export e importação de catálogo) não é automatizado.
 
 ## Estado
 
-- Implementado: sessões, loot com fontes explícitas, ícones oficiais com cache, importação v1/v2, deduplicação persistente, filtros e totais, preços manuais por item e quality, preços do Albion Data Project (manual prevalece), anulação de loot, ledger com estorno, divisão, catálogo importável, exportação JSON/CSV, configurações, log em arquivo.
+- Implementado: sessões, loot com fontes explícitas, ícones oficiais com cache, importação v1/v2, deduplicação persistente, filtros e totais, preços manuais por item e quality, preços do Albion Data Project (manual prevalece), importação offline de capturas PCAP (experimental, só testada com dados sintéticos), anulação de loot, ledger com estorno, divisão, catálogo importável, exportação JSON/CSV, configurações, log em arquivo.
 - Não implementado (páginas marcadas na interface): crafting, financeiro consolidado, composições.
 - Pendente: KeyAuth real, validação no Windows, paginação de sessões muito grandes.

@@ -1037,6 +1037,11 @@ tr.voided .item-icon {
   font-size: var(--text-xs);
   color: var(--muted);
 }
+.help.warning-note {
+  border-left: 3px solid var(--warn);
+  padding-left: var(--space-2);
+  color: var(--text);
+}
 .form-actions {
   display: flex;
   justify-content: flex-end;

@@ -4,9 +4,11 @@ import {
   desktop,
   exportSession,
   importCatalog,
+  importCapture,
   refreshMarketPrices,
   request,
 } from './api';
+import { CaptureForm, captureSummary } from './capture';
 import {
   ConfirmDialog,
   Dialog,
@@ -49,7 +51,8 @@ import type {
   View,
 } from './types';
 
-type Modal = 'session' | 'manual' | 'import' | 'ledger' | 'split' | null;
+type Modal =
+  'session' | 'manual' | 'import' | 'capture' | 'ledger' | 'split' | null;
 const sessionViews: ViewId[] = ['loot', 'players', 'ledger'];
 
 export default function App() {
@@ -282,6 +285,7 @@ export default function App() {
               }
               exportAs={exportAs}
               openImport={() => setModal('import')}
+              openCapture={() => setModal('capture')}
             />
           )}
           {isSessionView && currentView && <Summary view={currentView} />}
@@ -337,6 +341,7 @@ export default function App() {
               session: 'Nova sessão',
               manual: 'Registrar loot',
               import: 'Importar JSON',
+              capture: 'Importar captura de loot',
               ledger: 'Novo lançamento',
               split: 'Dividir saldo',
             }[modal]
@@ -407,6 +412,20 @@ export default function App() {
                     json,
                   });
                   return `${result.inserted} inseridos; ${result.duplicates} duplicados ignorados.`;
+                })
+              }
+            />
+          )}
+          {modal === 'capture' && (
+            <CaptureForm
+              players={Object.keys(currentView?.full_totals.players ?? {})}
+              busy={busy}
+              submit={(roster) =>
+                void act(async () => {
+                  const result = await importCapture(active, roster);
+                  return result
+                    ? captureSummary(result)
+                    : 'Importação de captura cancelada.';
                 })
               }
             />

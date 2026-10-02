@@ -1,11 +1,31 @@
 import assert from 'node:assert/strict';
-import { writeFile } from 'node:fs/promises';
+import { copyFile, readFile, writeFile } from 'node:fs/promises';
 import { createServer } from 'node:http';
 import path from 'node:path';
 
 // Stand-in for the Albion Data Project, so price refreshes are deterministic and offline.
 // The app reaches it only when tauri-driver was started with KALBION_ADP_URL (debug builds).
 const adpPort = Number(process.env.KALBION_ADP_PORT || 4448);
+// Debug builds answer "open file" dialogs (which WebDriver cannot drive) with files from
+// this directory; tauri-driver must be started with the same KALBION_TEST_DIALOG_DIR.
+const dialogDir = process.env.KALBION_TEST_DIALOG_DIR;
+assert.ok(
+  dialogDir,
+  'set KALBION_TEST_DIALOG_DIR (same value for tauri-driver and this script)',
+);
+const fixtures = path.resolve('crates/kalbion-capture/tests/fixtures');
+await copyFile(
+  path.join(fixtures, 'synthetic-items.json'),
+  path.join(dialogDir, 'items.json'),
+);
+// A capture belongs to one session, so every run gets its own: shifting the first packet's
+// time changes the capture's identity (its fingerprint covers the first packet).
+const capturePcap = await readFile(path.join(fixtures, 'synthetic-loot.pcap'));
+capturePcap.writeUInt32LE(
+  capturePcap.readUInt32LE(24) + (Date.now() % 3600),
+  24,
+);
+await writeFile(path.join(dialogDir, 'capture.pcap'), capturePcap);
 const adpRequests = [];
 const observed = new Date(Date.now() - 2 * 3_600_000)
   .toISOString()
@@ -369,6 +389,63 @@ try {
       .full_totals.session.events,
     8,
   );
+  // Offline capture import (synthetic file): needs the imported catalog first.
+  await click('Configurações');
+  await click('Importar items.json');
+  await until(() =>
+    execute(
+      `return document.body.textContent.includes('Catálogo importado: 4 itens')`,
+    ),
+  );
+  await click('Loot');
+  for (const expected of [
+    '3 inseridos, 0 duplicados',
+    '0 inseridos, 3 duplicados',
+  ]) {
+    await click('Ações da sessão');
+    await click('Importar captura (PCAP)');
+    await until(() =>
+      execute(
+        `return ['Kazz', 'Luna', 'Thorin'].every(name => document.querySelector('textarea[name="roster"]')?.value.includes(name))`,
+      ),
+    );
+    await click('Escolher arquivo e importar');
+    step = `capture import: ${expected}`;
+    await until(() =>
+      execute(
+        `return !document.querySelector('[role="dialog"]') && document.body.textContent.includes(arguments[0])`,
+        [`capture.pcap: ${expected}`],
+      ),
+    );
+  }
+  const notice = await execute(
+    `return document.querySelector('.notice, [role="status"]')?.textContent ?? document.body.textContent`,
+  );
+  assert.ok(notice.includes('1 loot de jogadores fora da lista'), notice);
+  assert.ok(notice.includes('1 item fora do catálogo'), notice);
+  const captured = (
+    await ipc({ operation: 'view', session_id: sessionId, filter: {} })
+  ).rows.filter((row) => row.event.source === 'kalbion.capture.pcap');
+  assert.equal(captured.length, 3);
+  assert.ok(
+    captured.every(
+      (row) =>
+        row.event.origin === 'observed' &&
+        row.imported &&
+        row.event.quality === null &&
+        row.event.player !== 'Inimigo',
+    ),
+  );
+  assert.deepEqual(captured.map((row) => row.event.item.id).sort(), [
+    'T4_BAG',
+    'T4_WOOD',
+    'T5_PLANKS_LEVEL1@1',
+  ]);
+  await until(() =>
+    execute(
+      `return document.querySelectorAll('.loot-table tbody tr').length === 11`,
+    ),
+  );
   // Switch to a second session and back through the header selector.
   await click('Nova sessão');
   await input('input[name="name"]', 'Second session');
@@ -384,7 +461,7 @@ try {
   );
   await until(() =>
     execute(
-      `return document.querySelectorAll('.loot-table tbody tr').length === 8`,
+      `return document.querySelectorAll('.loot-table tbody tr').length === 11`,
     ),
   );
   await click('Ações da sessão');
@@ -423,8 +500,8 @@ try {
     session_id: sessionId,
     filter: {},
   });
-  assert.equal(recovered.rows.length, 8);
-  assert.equal(recovered.full_totals.session.events, 8);
+  assert.equal(recovered.rows.length, 11);
+  assert.equal(recovered.full_totals.session.events, 11);
   assert.equal(recovered.finance.settlements, 668);
   assert.equal(
     recovered.rows.filter((row) => row.price).length,
@@ -435,7 +512,7 @@ try {
     'Martlock',
   );
   console.log(
-    'PASS: desktop UI, real IPC, simulation, manual loot, catalog search, item icons, void/restore, ledger reversal, session switching, import validation/replay, manual and market prices, player totals, ledger, split, filters, empty/error states, session close/reopen, settings, disabled licensing, persistence after process restart.',
+    'PASS: desktop UI, real IPC, simulation, manual loot, catalog search, item icons, void/restore, ledger reversal, session switching, import validation/replay, offline capture import (synthetic PCAP) and replay, manual and market prices, player totals, ledger, split, filters, empty/error states, session close/reopen, settings, disabled licensing, persistence after process restart.',
   );
 } catch (error) {
   console.error(`FAILED at step: ${step}`);

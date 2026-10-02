@@ -48,9 +48,14 @@ manuais abaixo.
 - [ ] KeyAuth real: owner ID, nome do app, política de expiração e indisponibilidade; contrato assíncrono; token no cofre de senhas do sistema.
 - [ ] Jurídico: consultar a SBI sobre monetização e uso de dados; conferir termos do ao-bin-dumps e do serviço de ícones.
 
-## 6. Só com autorização
+## 6. Captura de loot (sem autorização da SBI)
 
-- [ ] Captura de rede: helper isolado com privilégios mínimos, Protocol18, replay offline antes do ao vivo, identidade de evento derivada do pacote para a deduplicação.
+- [x] Pesquisa de regras e viabilidade (2026-10-01): recomendação de consultar a SBI antes de distribuir; alertas de PK descartados.
+- [x] Etapa offline na branch `feature/pcap-offline`: PCAP/PCAPNG → Photon → Protocol18 → `EvOtherGrabbedLoot` → loot normalizado, com lista de jogadores, catálogo e identidade por captura e posição ([docs/captura-offline.md](docs/captura-offline.md)). Testada só com dados sintéticos.
+- [ ] Validar com uma captura real gravada legitimamente pelo dono e comparar com o que aconteceu no jogo.
+- [ ] Ticket à SBI (support@albiononline.com) com as perguntas da pesquisa; nada de distribuir ou cobrar antes da resposta.
+- [ ] Qualidade do item: correlacionar com eventos 30/32/98/99 (ainda não implementado).
+- [ ] Captura ao vivo: só depois da resposta da SBI; helper separado com privilégio mínimo; licença do Npcap no Windows.
 
 ## Notas de ambiente
 

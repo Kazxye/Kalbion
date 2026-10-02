@@ -2005,6 +2005,7 @@ dependencies = [
 name = "kalbion"
 version = "0.1.0"
 dependencies = [
+ "kalbion-capture",
  "kalbion-core",
  "rfd",
  "serde",
@@ -2014,6 +2015,20 @@ dependencies = [
  "tempfile",
  "tracing",
  "tracing-subscriber",
+]
+
+[[package]]
+name = "kalbion-capture"
+version = "0.1.0"
+dependencies = [
+ "chrono",
+ "kalbion-core",
+ "serde",
+ "serde_json",
+ "sha2",
+ "tempfile",
+ "thiserror 2.0.21",
+ "tracing",
 ]
 
 [[package]]

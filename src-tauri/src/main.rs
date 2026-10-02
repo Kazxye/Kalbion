@@ -1,12 +1,13 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+use kalbion_capture::{albion, convert};
 use kalbion_core::{
     catalog,
     domain::*,
     icons::IconCache,
     licensing::{KeyAuth, LicenseProvider},
     market::AlbionDataProject,
-    store::MarketRefresh,
+    store::{CaptureImport, InsertResult, MarketRefresh},
     Store,
 };
 use serde::Deserialize;
@@ -224,20 +225,29 @@ async fn export_session(
     tracing::info!(operation = "session_exported", %session_id, %format);
     Ok(true)
 }
+/// Debug builds only: the desktop smoke test answers "open file" dialogs, which WebDriver
+/// cannot drive, with `<KALBION_TEST_DIALOG_DIR>/<name>`. Release builds always ask the user.
+async fn pick_file(dialog: rfd::AsyncFileDialog, test_name: &str) -> Option<std::path::PathBuf> {
+    #[cfg(debug_assertions)]
+    if let Some(directory) = std::env::var_os("KALBION_TEST_DIALOG_DIR") {
+        tracing::warn!(operation = "file_dialog_overridden", file = test_name);
+        return Some(std::path::PathBuf::from(directory).join(test_name));
+    }
+    #[cfg(not(debug_assertions))]
+    let _ = test_name;
+    dialog.pick_file().await.map(|file| file.path().to_owned())
+}
 /// The path comes only from the native dialog, never from the webview.
 #[tauri::command]
 async fn import_catalog(
     state: tauri::State<'_, AppState>,
 ) -> std::result::Result<Option<catalog::CatalogInfo>, String> {
-    let Some(file) = rfd::AsyncFileDialog::new()
+    let dialog = rfd::AsyncFileDialog::new()
         .set_title("Importar catálogo (formatted/items.json)")
-        .add_filter("Catálogo ao-bin-dumps", &["json"])
-        .pick_file()
-        .await
-    else {
+        .add_filter("Catálogo ao-bin-dumps", &["json"]);
+    let Some(path) = pick_file(dialog, "items.json").await else {
         return Ok(None);
     };
-    let path = file.path().to_owned();
     let label: String = path
         .file_name()
         .map(|name| {
@@ -301,6 +311,132 @@ async fn refresh_market_prices(
         .map_err(|_| "Banco indisponível")?
         .apply_market_quotes(&session_id, &plan, &quotes)
         .map_err(|error| report("market_refresh_failed", error))
+}
+#[derive(serde::Serialize)]
+struct CaptureSummary {
+    file_label: String,
+    inserted: usize,
+    duplicates: usize,
+    report: convert::Report,
+    diagnostics: kalbion_capture::Diagnostics,
+    /// The capture is newer than the latest date the codebook was observed in real traffic.
+    newer_than_codebook: bool,
+}
+/// Offline import of a capture file the user recorded. The path comes only from the native
+/// dialog; decoding runs without the database lock. Nothing here captures traffic.
+#[tauri::command]
+async fn import_capture(
+    state: tauri::State<'_, AppState>,
+    session_id: String,
+    roster: Vec<String>,
+) -> std::result::Result<Option<CaptureSummary>, String> {
+    let roster = convert::roster(&roster)?;
+    {
+        let store = state.0.lock().map_err(|_| "Banco indisponível")?;
+        let session = store
+            .session(&session_id)
+            .map_err(|error| report("capture_import_failed", error))?;
+        if session.closed_at.is_some() {
+            return Err("Sessão encerrada; reabra para importar loot".into());
+        }
+        let catalog = store
+            .catalog_info()
+            .map_err(|error| report("capture_import_failed", error))?;
+        if catalog.kind != "ao_bin_dumps" {
+            return Err("Importe o catálogo items.json (Configurações) da mesma versão do jogo antes de importar capturas".into());
+        }
+    }
+    let dialog = rfd::AsyncFileDialog::new()
+        .set_title("Importar captura de loot (PCAP/PCAPNG)")
+        .add_filter("Captura de pacotes", &["pcap", "pcapng", "cap"]);
+    let Some(path) = pick_file(dialog, "capture.pcap").await else {
+        return Ok(None);
+    };
+    let file_label: String = path
+        .file_name()
+        .map(|name| {
+            name.to_string_lossy()
+                .chars()
+                .filter(|c| !c.is_control())
+                .take(200)
+                .collect()
+        })
+        .filter(|name: &String| !name.trim().is_empty())
+        .unwrap_or_else(|| "captura.pcap".into());
+    let capture = tauri::async_runtime::spawn_blocking(move || {
+        let limits = kalbion_capture::Limits::default();
+        let file = std::fs::File::open(&path).map_err(|error| {
+            tracing::error!(operation = "capture_read_failed", cause = %error);
+            "Não foi possível ler o arquivo".to_string()
+        })?;
+        let size = file
+            .metadata()
+            .map(|metadata| metadata.len())
+            .unwrap_or(u64::MAX);
+        if size > limits.max_file_bytes {
+            return Err(format!(
+                "Arquivo maior que o limite de {} MB",
+                limits.max_file_bytes / (1024 * 1024)
+            ));
+        }
+        kalbion_capture::decode(std::io::BufReader::new(file), limits).map_err(|error| {
+            tracing::warn!(operation = "capture_decode_refused", cause = %error);
+            error.to_string()
+        })
+    })
+    .await
+    .map_err(|_| "Falha ao processar a captura")??;
+    let mut store = state.0.lock().map_err(|_| "Banco indisponível")?;
+    if let Some(other) = store
+        .capture_session_elsewhere(&capture.fingerprint, &session_id)
+        .map_err(|error| report("capture_import_failed", error))?
+    {
+        return Err(format!(
+            "Esta captura já foi importada na sessão «{other}»; o mesmo loot não pode contar em duas sessões"
+        ));
+    }
+    let (events, conversion) = convert::to_events(&capture, &session_id, &roster, |index| {
+        store.catalog_item_by_game_index(index)
+    })
+    .map_err(|error| report("capture_import_failed", error))?;
+    let mut total = InsertResult {
+        inserted: 0,
+        duplicates: 0,
+    };
+    // Each batch is atomic; if a later batch fails the earlier ones stay, and importing the
+    // same file again completes the rest without duplicates.
+    for batch in events.chunks(kalbion_core::import::MAX_IMPORT_EVENTS) {
+        let result = store
+            .ingest(batch, true)
+            .map_err(|error| report("capture_import_failed", error))?;
+        total.inserted += result.inserted;
+        total.duplicates += result.duplicates;
+    }
+    store
+        .record_capture_import(&CaptureImport {
+            session_id: session_id.clone(),
+            file_label: file_label.clone(),
+            file_sha256: capture.file_sha256.clone(),
+            fingerprint: capture.fingerprint.clone(),
+            decoder_version: kalbion_capture::DECODER_VERSION.into(),
+            inserted: total.inserted,
+            duplicates: total.duplicates,
+            diagnostics: serde_json::to_string(&capture.diagnostics).unwrap_or_default(),
+        })
+        .map_err(|error| report("capture_import_failed", error))?;
+    let newer_than_codebook = capture
+        .diagnostics
+        .last_packet_at
+        .as_deref()
+        .is_some_and(|last| last > albion::CODEBOOK_OBSERVED_UNTIL);
+    Ok(Some(CaptureSummary {
+        file_label,
+        inserted: total.inserted,
+        duplicates: total.duplicates,
+        report: conversion,
+        diagnostics: capture.diagnostics,
+        newer_than_codebook,
+    }))
 }
 /// Debug builds can point at a local mock (desktop smoke test); release builds always use
 /// the official hosts.
@@ -408,7 +544,8 @@ fn main() {
             dispatch,
             export_session,
             import_catalog,
-            refresh_market_prices
+            refresh_market_prices,
+            import_capture
         ])
         .run(tauri::generate_context!());
     if let Err(error) = result {

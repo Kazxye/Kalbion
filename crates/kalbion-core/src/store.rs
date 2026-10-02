@@ -40,6 +40,19 @@ pub struct MarketRefresh {
     /// quality, so only a manual price can cover them. Resources (no quality) are quoted.
     pub unknown_quality: usize,
 }
+/// Audit record of an imported capture file (see `kalbion-capture`).
+#[derive(Debug, Clone, Serialize)]
+pub struct CaptureImport {
+    pub session_id: String,
+    pub file_label: String,
+    pub file_sha256: String,
+    pub fingerprint: String,
+    pub decoder_version: String,
+    pub inserted: usize,
+    pub duplicates: usize,
+    /// JSON produced by the decoder; counts only, no player names.
+    pub diagnostics: String,
+}
 #[derive(Debug, Serialize)]
 pub struct InsertResult {
     pub inserted: usize,
@@ -374,6 +387,87 @@ impl Store {
                 ))
             },
         )?;
+        Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
+    }
+    /// Resolves the game's numeric item index (as found in captured traffic) through the
+    /// imported catalog. Without an imported catalog there is nothing to resolve against.
+    pub fn catalog_item_by_game_index(&self, index: u32) -> Result<Option<Item>> {
+        if !self.has_imported_catalog()? {
+            return Err(invalid(
+                "Importe o catálogo items.json (Configurações) da mesma versão do jogo antes de importar capturas",
+            ));
+        }
+        Ok(self
+            .connection
+            .query_row(
+                "SELECT unique_name, name, tier, enchantment FROM catalog_items WHERE game_index = ?1",
+                [index],
+                |row| Ok(Item::stored(row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+            )
+            .optional()?)
+    }
+    pub fn record_capture_import(&self, record: &CaptureImport) -> Result<()> {
+        self.session(&record.session_id)?;
+        text(&record.file_label, 200)?;
+        self.connection.execute(
+            "INSERT INTO capture_imports (session_id, imported_at, file_label, file_sha256,
+             fingerprint, decoder_version, inserted, duplicates, diagnostics)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+            params![
+                record.session_id,
+                now(),
+                record.file_label.trim(),
+                record.file_sha256,
+                record.fingerprint,
+                record.decoder_version,
+                record.inserted as i64,
+                record.duplicates as i64,
+                record.diagnostics
+            ],
+        )?;
+        tracing::info!(
+            operation = "capture_imported",
+            session_id = %record.session_id,
+            decoder_version = %record.decoder_version,
+            inserted = record.inserted,
+            duplicates = record.duplicates
+        );
+        Ok(())
+    }
+    /// Captured loot has a global identity, so a capture already imported into another
+    /// session must not be counted again; returns that session's name.
+    pub fn capture_session_elsewhere(
+        &self,
+        fingerprint: &str,
+        session_id: &str,
+    ) -> Result<Option<String>> {
+        Ok(self
+            .connection
+            .query_row(
+                "SELECT s.name FROM capture_imports c JOIN sessions s ON s.id = c.session_id
+                 WHERE c.fingerprint = ?1 AND c.session_id <> ?2 LIMIT 1",
+                params![fingerprint, session_id],
+                |row| row.get(0),
+            )
+            .optional()?)
+    }
+    pub fn capture_imports(&self, session_id: &str) -> Result<Vec<CaptureImport>> {
+        let mut statement = self.connection.prepare(
+            "SELECT session_id, file_label, file_sha256, fingerprint, decoder_version, inserted,
+             duplicates, diagnostics FROM capture_imports WHERE session_id = ?1 ORDER BY id",
+        )?;
+        let rows = statement.query_map([session_id], |row| {
+            Ok(CaptureImport {
+                session_id: row.get(0)?,
+                file_label: row.get(1)?,
+                file_sha256: row.get(2)?,
+                fingerprint: row.get(3)?,
+                decoder_version: row.get(4)?,
+                inserted: row.get::<_, i64>(5)?.unsigned_abs() as usize,
+                duplicates: row.get::<_, i64>(6)?.unsigned_abs() as usize,
+                diagnostics: row.get(7)?,
+            })
+        })?;
         Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
     }
     fn catalog_item(&self, item_id: &str) -> Result<Item> {
