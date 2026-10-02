@@ -4,7 +4,7 @@
 //! messages are reassembled with bounded memory. Only event messages are handed on.
 use crate::net::Endpoint;
 use crate::Diagnostics;
-use std::collections::{HashMap, HashSet, VecDeque};
+use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
 
 const PACKET_HEADER: usize = 12;
 const COMMAND_HEADER: usize = 12;
@@ -74,8 +74,20 @@ struct Pending {
     total: usize,
     count: u32,
     received: HashSet<u32>,
+    /// Byte ranges already written, `start -> end`. Kept disjoint, so `written == total`
+    /// at completion means every byte was covered exactly once.
+    ranges: BTreeMap<usize, usize>,
     written: usize,
     payload: Vec<u8>,
+}
+
+impl Pending {
+    fn overlaps(&self, start: usize, end: usize) -> bool {
+        let before = self.ranges.range(..=start).next_back();
+        let after = self.ranges.range(start..).next();
+        before.is_some_and(|(_, &previous_end)| previous_end > start)
+            || after.is_some_and(|(&next_start, _)| next_start < end)
+    }
 }
 
 pub struct Decoder {
@@ -232,6 +244,12 @@ impl Decoder {
         Ok(end)
     }
 
+    /// Removes a pending message from both the map and the eviction order, keeping them in sync.
+    fn discard(&mut self, key: &(Channel, u32)) -> Option<Pending> {
+        self.pending_order.retain(|entry| entry != key);
+        self.pending.remove(key)
+    }
+
     fn window(&mut self, channel: Channel) -> &mut Window {
         self.windows.entry(channel).or_default()
     }
@@ -265,6 +283,7 @@ impl Decoder {
             || count == 0
             || count > MAX_FRAGMENTS
             || number >= count
+            || data.is_empty()
         {
             diagnostics.malformed_photon += 1;
             return None;
@@ -277,16 +296,17 @@ impl Decoder {
         if let Some(existing) = self.pending.get(&key) {
             if existing.total != total || existing.count != count {
                 // Two messages claim the same start sequence: drop both rather than mix them.
-                self.pending.remove(&key);
+                self.discard(&key);
                 diagnostics.malformed_photon += 1;
                 return None;
             }
         } else {
-            if self.pending.len() >= MAX_PENDING {
-                if let Some(oldest) = self.pending_order.pop_front() {
-                    if self.pending.remove(&oldest).is_some() {
-                        diagnostics.fragments_dropped += 1;
-                    }
+            while self.pending.len() >= MAX_PENDING {
+                let Some(oldest) = self.pending_order.pop_front() else {
+                    break;
+                };
+                if self.pending.remove(&oldest).is_some() {
+                    diagnostics.fragments_dropped += 1;
                 }
             }
             self.pending.insert(
@@ -295,6 +315,7 @@ impl Decoder {
                     total,
                     count,
                     received: HashSet::new(),
+                    ranges: BTreeMap::new(),
                     written: 0,
                     payload: vec![0; total],
                 },
@@ -302,15 +323,24 @@ impl Decoder {
             self.pending_order.push_back(key);
         }
         let pending = self.pending.get_mut(&key)?;
-        if !pending.received.insert(number) {
+        if pending.received.contains(&number) {
             diagnostics.retransmissions += 1;
             return None;
         }
-        pending.payload[offset..offset + data.len()].copy_from_slice(data);
+        let end = offset + data.len();
+        if pending.overlaps(offset, end) {
+            // A new fragment number over bytes already written: the headers are inconsistent,
+            // and keeping either version could emit a message assembled from two sources.
+            self.discard(&key);
+            diagnostics.malformed_photon += 1;
+            return None;
+        }
+        pending.received.insert(number);
+        pending.ranges.insert(offset, end);
+        pending.payload[offset..end].copy_from_slice(data);
         pending.written += data.len();
         if pending.received.len() as u32 == pending.count {
-            let done = self.pending.remove(&key)?;
-            self.pending_order.retain(|entry| *entry != key);
+            let done = self.discard(&key)?;
             if done.written != done.total {
                 diagnostics.malformed_photon += 1;
                 return None;
